@@ -1,0 +1,139 @@
+name: chart-publish
+
+# Publishes both Helm charts as OCI artifacts to GHCR.
+#
+# Resulting registry URLs:
+#   oci://ghcr.io/secrets-bridge/charts/secrets-bridge
+#   oci://ghcr.io/secrets-bridge/charts/secrets-bridge-agent
+#
+# Versioning strategy (mirrors the image-publish convention from the
+# app repos, adapted to Helm OCI's immutable-version semantics):
+#
+#   Push to `main`              → <Chart.yaml-version>-dev.<short-sha>
+#                                 (e.g. 0.0.1-dev.54b682c). Each push
+#                                 creates a unique, sortable
+#                                 prerelease version. The plain
+#                                 `Chart.yaml/version` itself is
+#                                 NEVER pushed from main — operators
+#                                 can't accidentally `helm install`
+#                                 a chart called `0.0.1` from a
+#                                 between-tags `main` commit.
+#
+#   Push tag `v0.1.0` (semver)  → 0.1.0 (literally — the tag minus
+#                                 the leading `v`). The chart's
+#                                 `Chart.yaml/version` MUST match
+#                                 the tag, OR the workflow exits
+#                                 with a clear error before pushing.
+#
+#   workflow_dispatch           → manual `dev.<sha>` rebuild
+#
+# Operators consume via:
+#   helm registry login ghcr.io --username <user> \
+#     --password <gh-token-with-read:packages>
+#   helm pull oci://ghcr.io/secrets-bridge/charts/secrets-bridge \
+#     --version 0.1.0
+#   helm pull oci://ghcr.io/secrets-bridge/charts/secrets-bridge-agent \
+#     --version '0.0.1-dev.*'  # wildcard picks latest dev
+#
+# Until v0.1.0 ships, the only stable channel is the `-dev.<sha>`
+# series. After v0.1.0, the recommended pin is the semver tag.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+    paths:
+      - 'secrets-bridge/**'
+      - 'agent/**'
+      - '.github/workflows/chart-publish.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  HELM_VERSION: v3.20.0
+  REGISTRY: ghcr.io
+  ORG: secrets-bridge
+
+jobs:
+  publish:
+    name: package + push (${{ matrix.chart }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        chart: [secrets-bridge, agent]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Resolve chart name + version
+        id: chart
+        run: |
+          cd ${{ matrix.chart }}
+          CHART_NAME=$(awk '/^name:/ {print $2; exit}' Chart.yaml)
+          BASE_VERSION=$(awk '/^version:/ {print $2; exit}' Chart.yaml)
+          echo "name=$CHART_NAME" >> "$GITHUB_OUTPUT"
+
+          REF="${GITHUB_REF}"
+          if [[ "$REF" == refs/tags/v*.*.* ]]; then
+            TAG="${REF#refs/tags/v}"
+            if [[ "$TAG" != "$BASE_VERSION" ]]; then
+              echo "::error::Tag $REF (resolves to version $TAG) does not match Chart.yaml/version ($BASE_VERSION) in ${{ matrix.chart }}/. Bump Chart.yaml before tagging."
+              exit 1
+            fi
+            VERSION="$TAG"
+            CHANNEL="release"
+          else
+            VERSION="${BASE_VERSION}-dev.${GITHUB_SHA:0:7}"
+            CHANNEL="dev"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Resolved chart=$CHART_NAME  version=$VERSION  channel=$CHANNEL"
+
+      - name: Package
+        id: package
+        run: |
+          cd ${{ matrix.chart }}
+          helm package . \
+            --version "${{ steps.chart.outputs.version }}" \
+            --app-version "${{ steps.chart.outputs.version }}" \
+            --destination "${{ runner.temp }}/packaged"
+          ls -l "${{ runner.temp }}/packaged"
+          echo "tgz=${{ runner.temp }}/packaged/${{ steps.chart.outputs.name }}-${{ steps.chart.outputs.version }}.tgz" >> "$GITHUB_OUTPUT"
+
+      - name: Lint + render the packaged tarball
+        run: |
+          # Belt-and-braces: verify the tarball helm just produced
+          # actually lints clean (catches packaging-time regressions
+          # the file-tree lint doesn't see).
+          helm lint "${{ steps.package.outputs.tgz }}"
+          helm template ci-smoke "${{ steps.package.outputs.tgz }}" \
+            ${{ matrix.chart == 'agent' && '--set clusterName=ci --set cp.endpoint=https://x.example.com' || '--set env=dev --set kms.backend=local --set ingress.host=x.example.com' }} \
+            > /dev/null
+
+      - name: Helm registry login (GHCR)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ${{ env.REGISTRY }} \
+                --username ${{ github.actor }} --password-stdin
+
+      - name: Push to GHCR (oci://${{ env.REGISTRY }}/${{ env.ORG }}/charts)
+        run: |
+          helm push "${{ steps.package.outputs.tgz }}" \
+            oci://${{ env.REGISTRY }}/${{ env.ORG }}/charts
+
+      - name: Output published version
+        run: |
+          echo "Published:"
+          echo "  oci://${{ env.REGISTRY }}/${{ env.ORG }}/charts/${{ steps.chart.outputs.name }}:${{ steps.chart.outputs.version }}"
+          echo
+          echo "Consume:"
+          echo "  helm pull oci://${{ env.REGISTRY }}/${{ env.ORG }}/charts/${{ steps.chart.outputs.name }} \\"
+          echo "    --version ${{ steps.chart.outputs.version }}"
