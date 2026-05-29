@@ -1,0 +1,18 @@
+{{- if and .Values.controller.enabled .Values.controller.metricsService.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "secrets-bridge.componentName" (dict "ctx" . "component" "controller") }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge.componentLabels" (dict "ctx" . "component" "controller") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: {{ .Values.controller.metricsService.port }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "secrets-bridge.componentSelectorLabels" (dict "ctx" . "component" "controller") | nindent 4 }}
+{{- end -}}

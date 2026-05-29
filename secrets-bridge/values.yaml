@@ -390,6 +390,94 @@ worker:
   tolerations: []
   affinity: {}
 
-# ── controller (scaffold — full impl lands in a follow-up PR) ────────
+# ── controller ───────────────────────────────────────────────────────
+#
+# Kubernetes operator (kubebuilder) that reconciles SecretsSync CRs.
+# Owns the cluster-scoped CRD `secretssyncs.sync.secrets-bridge.io`.
+# Does NOT hold provider credentials or contact Postgres/Redis — it
+# only VALIDATES that each CR's source + destination references
+# parse cleanly; actual value movement happens via the agent
+# elsewhere.
+
 controller:
-  enabled: false
+  enabled: true
+
+  # CRD installation. When true, the chart renders the
+  # `SecretsSync` CRD as part of the release. Switch to false in
+  # environments where the CRD is managed out-of-band (e.g.
+  # cluster-wide GitOps pipeline that pre-installs CRDs).
+  installCRDs: true
+
+  image:
+    repository: secrets-bridge/controller
+    tag: ""              # defaults to .Chart.AppVersion when empty
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+    automountServiceAccountToken: true
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+
+  # Manager flags. The defaults match the controller binary; flip
+  # leaderElect=true when running replicaCount > 1, and set a
+  # non-zero metricsAddr to scrape Prometheus.
+  config:
+    healthProbeAddr: ":8081"
+    metricsAddr: "0"            # "0" disables metrics; ":8080" enables
+    metricsSecure: true
+    leaderElect: false
+    enableHTTP2: false
+
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 8081
+    initialDelaySeconds: 15
+    periodSeconds: 20
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: 8081
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+  # Metrics service. Off by default — flip enabled=true AND set
+  # `controller.config.metricsAddr=:8080` together to expose the
+  # /metrics endpoint cluster-internally.
+  metricsService:
+    enabled: false
+    port: 8080
+
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
