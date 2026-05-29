@@ -1,0 +1,53 @@
+{{- if .Values.ingress.enabled -}}
+{{- if not (or .Values.api.enabled .Values.ui.enabled) -}}
+{{- fail "secrets-bridge: ingress.enabled=true but neither api.enabled nor ui.enabled — nothing to route to." -}}
+{{- end -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "secrets-bridge.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge.labels" . | nindent 4 }}
+  annotations:
+    {{- if .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          {{- /* api routes — listed first so they win over the ui catch-all */}}
+          {{- if .Values.api.enabled }}
+          {{- range .Values.ingress.apiPaths }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "secrets-bridge.componentName" (dict "ctx" $ "component" "api") }}
+                port:
+                  number: {{ $.Values.api.port }}
+          {{- end }}
+          {{- end }}
+          {{- /* ui catch-all — anything not matched above falls here */}}
+          {{- if .Values.ui.enabled }}
+          - path: {{ .Values.ingress.uiPath }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "secrets-bridge.componentName" (dict "ctx" . "component" "ui") }}
+                port:
+                  number: {{ .Values.ui.port }}
+          {{- end }}
+{{- end -}}

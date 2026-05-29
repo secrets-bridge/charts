@@ -1,0 +1,42 @@
+─────────────────────────────────────────────────────────────────────
+Secrets Bridge {{ .Chart.AppVersion }} — chart version {{ .Chart.Version }}
+─────────────────────────────────────────────────────────────────────
+
+Release:        {{ .Release.Name }}
+Namespace:      {{ .Release.Namespace }}
+Deployment mode: {{ .Values.env }}
+KMS backend:    {{ .Values.kms.backend }}
+
+{{- if eq (lower .Values.env) "dev" }}
+
+  ⚠️  SB_ENV=dev — the api WILL allow the LocalKMS backend and seed
+  three dev users (admin / approver / requester) on first boot.
+  Capture the generated passwords from the api's first-boot log
+  unless you set SB_DEV_SEED_PASSWORD on the env Secret.
+
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+
+The shared ingress fronts both components on the same host:
+
+  Host:       https://{{ .Values.ingress.host }}
+  api routes: {{- range .Values.ingress.apiPaths }}
+              {{ . }}
+              {{- end }}
+  ui route:   {{ .Values.ingress.uiPath }}  (catch-all)
+
+  Wait for the DNS record + TLS certificate to settle, then load the
+  host in a browser. The SPA calls /api/v1/* relative to the host,
+  so no CORS / no additional configuration is required.
+
+{{- else }}
+
+ingress.enabled=false — port-forward the api / ui Services manually
+to reach them.
+
+{{- end }}
+
+For full configuration reference see the chart's values.yaml, or:
+
+  helm show values secrets-bridge/secrets-bridge --version {{ .Chart.Version }}

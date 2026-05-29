@@ -1,0 +1,18 @@
+{{- if .Values.api.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "secrets-bridge.componentName" (dict "ctx" . "component" "api") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.api.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "secrets-bridge.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+{{- end -}}

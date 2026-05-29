@@ -1,0 +1,14 @@
+{{- if and .Values.ui.enabled .Values.ui.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "secrets-bridge.componentName" (dict "ctx" . "component" "ui") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge.componentLabels" (dict "ctx" . "component" "ui") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.ui.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "secrets-bridge.componentSelectorLabels" (dict "ctx" . "component" "ui") | nindent 6 }}
+{{- end -}}
