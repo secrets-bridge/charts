@@ -1,0 +1,196 @@
+# Secrets Bridge — agent chart.
+#
+# Operator orientation:
+#   1. Mint the agent on the CP side first:
+#        POST {CP}/api/v1/agents → { id, agent_secret }
+#   2. Create the identity Secret in the workload cluster:
+#        kubectl create secret generic secrets-bridge-agent \
+#          --from-literal=SB_AGENT_ID=<id> \
+#          --from-literal=SB_AGENT_SECRET=<secret>
+#   3. Set agent.cp.endpoint to the CP's HTTPS URL and
+#      agent.clusterName to a stable identifier for this cluster
+#      (used by the discovery flow to disambiguate refs per cluster).
+#   4. Configure the provider section the agent will fetch from
+#      (Vault, AWS Secrets Manager, ...). IRSA is the recommended
+#      AWS path; no static AWS creds in chart values.
+
+global:
+  imageRegistry: ghcr.io
+  imagePullSecrets: []
+  commonLabels: {}
+  commonAnnotations: {}
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: secrets-bridge/agent
+  tag: ""              # defaults to .Chart.AppVersion when empty
+  pullPolicy: IfNotPresent
+
+# Stable identifier for this cluster — required for the discovery
+# flow (BRD: one agent ≡ one cluster). Used as the `cluster_name`
+# column when discover jobs upsert rows; can't be safely defaulted.
+clusterName: ""
+
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: ""
+  # Set the IRSA role ARN here when the agent fetches from AWS
+  # Secrets Manager via instance role / EKS pod identity.
+  annotations: {}
+  automountServiceAccountToken: true
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+# Loopback-only probes. The agent has NO public listener (BRD §15).
+probesPort: 8090
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8090
+    host: 127.0.0.1
+  initialDelaySeconds: 5
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8090
+    host: 127.0.0.1
+  initialDelaySeconds: 2
+  periodSeconds: 5
+
+# ── Control plane connection ─────────────────────────────────────────
+
+cp:
+  # SB_CP_ENDPOINT. Must be HTTPS unless `insecureTransport=true`
+  # (which the chart's _validation.tpl refuses in production).
+  # Example: "https://secrets-bridge.example.com"
+  endpoint: ""
+
+  # Per Piece 7 of the agent: TLS pin to a private CA without
+  # trusting the system roots. Provide either:
+  #   - caExistingSecret + caExistingSecretKey, OR
+  #   - leave both blank to use the cluster's system roots
+  caExistingSecret: ""
+  caExistingSecretKey: ca.crt
+  tlsServerName: ""
+
+  # SB_INSECURE_TRANSPORT. NEVER set to true outside local dev.
+  insecureTransport: false
+
+  # Heartbeat cadence (default 30s in the binary).
+  heartbeatInterval: ""
+
+  # Job claim loop. Defaults: 5s interval, 4 concurrent workers.
+  claimInterval: ""
+  claimConcurrency: ""
+
+# ── Identity ─────────────────────────────────────────────────────────
+#
+# The agent identity is a (agent_id, agent_secret) pair issued ONCE
+# by the CP at mint time. Operator pre-creates a Secret carrying:
+#
+#   SB_AGENT_ID:     <id>
+#   SB_AGENT_SECRET: <secret>
+#
+# Optional X25519 keypair material for the wire-envelope path
+# (Piece 8b):
+#
+#   SB_AGENT_PRIVATE_KEY:      <base64>           (env, prefer file)
+#                              -- OR --
+#   SB_AGENT_PRIVATE_KEY_FILE: <mount path>
+#
+# When neither is set, the agent generates an ephemeral keypair per
+# boot and registers it with the CP. Acceptable for dev; persistent
+# keys are recommended for production so a pod restart doesn't
+# rotate the registered pubkey.
+
+identity:
+  existingSecret: secrets-bridge-agent
+
+# ── Providers ────────────────────────────────────────────────────────
+#
+# Provider connection details consumed by the agent's resolver
+# factories (Piece 4c+4d). Credentials are NEVER set as chart values;
+# they live in the identity Secret OR cluster-provided IRSA / kube
+# auth so this chart can be safely committed alongside application
+# code.
+
+providers:
+  vault:
+    enabled: false
+    # SB_VAULT_ADDR
+    addr: ""
+    # SB_VAULT_NAMESPACE — Vault Enterprise only
+    namespace: ""
+    # SB_VAULT_KV_MOUNT (defaults to "secret" in the binary)
+    kvMount: ""
+    # SB_VAULT_KV_PREFIX — restrict reads/writes to a subtree
+    kvPrefix: ""
+    # SB_VAULT_KUBERNETES_ROLE for k8s-auth (preferred over token)
+    kubernetesRole: ""
+
+  awsSecretsManager:
+    enabled: false
+    # SB_AWS_REGION
+    region: ""
+    # SB_AWS_ENDPOINT — optional (LocalStack / VPC endpoint)
+    endpoint: ""
+    # SB_AWS_ROLE_ARN — operator may also wire IRSA via
+    # serviceAccount.annotations to avoid this entirely
+    roleArn: ""
+
+# ── Reloader ─────────────────────────────────────────────────────────
+
+reloader:
+  # Stamps the agent Deployment with
+  # `secret.reloader.stakater.com/reload: <identity.existingSecret>`
+  # so a stakater/reloader install in the cluster rolls the pod
+  # within ~30s of any Secret change (rotated keypair, rotated CA).
+  enabled: true
+
+# ── NetworkPolicy ────────────────────────────────────────────────────
+
+networkPolicy:
+  # Egress-only NetworkPolicy. INGRESS is denied entirely (no inbound
+  # listener). Egress allows: DNS (10/UDP, 53/TCP), CP HTTPS, and the
+  # provider endpoints. Operators tighten further by adding
+  # `egress.allowCIDRs` for specific provider VPC endpoints.
+  enabled: false
+  dnsNamespaceSelector: {}
+  allowCIDRs: []
+
+# ── Pod placement ────────────────────────────────────────────────────
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

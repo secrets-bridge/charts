@@ -1,0 +1,41 @@
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secrets-bridge-agent.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge-agent.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "secrets-bridge-agent.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  # Hard rule: the agent has NO inbound listener (BRD §15). The
+  # NetworkPolicy enforces it from the network side too.
+  ingress: []
+  egress:
+    # DNS — UDP/TCP 53 to kube-system pods.
+    - to:
+        - namespaceSelector:
+            {{- toYaml (default (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")) .Values.networkPolicy.dnsNamespaceSelector) | nindent 12 }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- with .Values.networkPolicy.allowCIDRs }}
+    # Operator-supplied CIDRs — typically the CP ingress IP and any
+    # provider VPC endpoints (Vault, AWS Secrets Manager).
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+{{- end -}}
