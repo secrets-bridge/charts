@@ -1,0 +1,73 @@
+{{- if .Values.controller.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "secrets-bridge.componentName" (dict "ctx" . "component" "controller") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge.componentLabels" (dict "ctx" . "component" "controller") | nindent 4 }}
+spec:
+  replicas: {{ .Values.controller.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "secrets-bridge.componentSelectorLabels" (dict "ctx" . "component" "controller") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "secrets-bridge.componentSelectorLabels" (dict "ctx" . "component" "controller") | nindent 8 }}
+        {{- with .Values.controller.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.controller.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "secrets-bridge.componentServiceAccountName" (dict "ctx" . "component" "controller" "spec" .Values.controller.serviceAccount) }}
+      {{- with .Values.controller.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: manager
+          image: {{ include "secrets-bridge.image" (dict "ctx" . "image" .Values.controller.image) }}
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          {{- with .Values.controller.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args:
+            - --health-probe-bind-address={{ .Values.controller.config.healthProbeAddr }}
+            - --metrics-bind-address={{ .Values.controller.config.metricsAddr }}
+            - --metrics-secure={{ .Values.controller.config.metricsSecure }}
+            - --leader-elect={{ .Values.controller.config.leaderElect }}
+            - --enable-http2={{ .Values.controller.config.enableHTTP2 }}
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            {{- if .Values.controller.metricsService.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.controller.metricsService.port }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.controller.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.controller.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end -}}

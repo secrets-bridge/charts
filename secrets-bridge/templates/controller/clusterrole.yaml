@@ -1,0 +1,26 @@
+{{- if .Values.controller.enabled -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "secrets-bridge.componentName" (dict "ctx" . "component" "controller") }}
+  labels:
+    {{- include "secrets-bridge.componentLabels" (dict "ctx" . "component" "controller") | nindent 4 }}
+rules:
+  # SecretsSync references can name a Kubernetes Secret as their
+  # `source` (e.g. when the agent has pre-populated the cluster).
+  # The controller only reads them — it never holds or relays the
+  # values.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, watch]
+  # SecretsSync (cluster-scoped) full lifecycle.
+  - apiGroups: [sync.secrets-bridge.io]
+    resources: [secretssyncs]
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: [sync.secrets-bridge.io]
+    resources: [secretssyncs/finalizers]
+    verbs: [update]
+  - apiGroups: [sync.secrets-bridge.io]
+    resources: [secretssyncs/status]
+    verbs: [get, patch, update]
+{{- end -}}
