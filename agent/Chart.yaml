@@ -1,0 +1,47 @@
+apiVersion: v2
+name: secrets-bridge-agent
+description: |
+  Secrets Bridge outbound execution agent. Deployed inside each
+  workload cluster / target boundary; communicates outbound-only with
+  the central Secrets Bridge control plane and the local secret
+  provider (Vault, AWS Secrets Manager, etc.).
+
+  Hard rules baked into this chart:
+    - NO DATABASE_URL / REDIS_URL env vars surfaced (BRD §15, §24).
+    - Loopback-only probes (`127.0.0.1:8090`); no Service rendered.
+    - Identity material lives in a Kubernetes Secret the operator
+      pre-creates — never in chart values.
+type: application
+home: https://secrets-bridge.io
+icon: https://raw.githubusercontent.com/secrets-bridge/.github/main/profile/logo.svg
+sources:
+  - https://github.com/secrets-bridge/agent
+maintainers:
+  - name: secrets-bridge
+    url: https://github.com/secrets-bridge
+
+# Pre-v0.1.0 — the chart and the image both roll on `:dev`.
+version: 0.0.1
+appVersion: "dev"
+
+kubeVersion: ">=1.27.0-0"
+
+keywords:
+  - secrets
+  - secrets-management
+  - vault
+  - aws-secrets-manager
+  - agent
+  - kubernetes
+
+annotations:
+  artifacthub.io/category: security
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/links: |
+    - name: Docs
+      url: https://secrets-bridge.io
+    - name: Agent repository
+      url: https://github.com/secrets-bridge/agent
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial chart for the outbound agent

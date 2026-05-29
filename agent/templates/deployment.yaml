@@ -1,0 +1,150 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "secrets-bridge-agent.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge-agent.labels" . | nindent 4 }}
+  annotations:
+    {{- if and .Values.reloader.enabled .Values.identity.existingSecret }}
+    secret.reloader.stakater.com/reload: {{ .Values.identity.existingSecret | quote }}
+    {{- end }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "secrets-bridge-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "secrets-bridge-agent.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ printf "%s|%s|%s" .Values.cp.endpoint .Values.clusterName (default "" .Values.identity.existingSecret) | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "secrets-bridge-agent.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agent
+          image: {{ include "secrets-bridge-agent.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: probes
+              containerPort: {{ .Values.probesPort }}
+              protocol: TCP
+          env:
+            - name: SB_LOCAL_ADDR
+              value: "127.0.0.1:{{ .Values.probesPort }}"
+            - name: SB_CLUSTER_NAME
+              value: {{ .Values.clusterName | quote }}
+            - name: SB_CP_ENDPOINT
+              value: {{ .Values.cp.endpoint | quote }}
+            {{- if .Values.cp.insecureTransport }}
+            - name: SB_INSECURE_TRANSPORT
+              value: "true"
+            {{- end }}
+            {{- with .Values.cp.tlsServerName }}
+            - name: SB_CP_TLS_SERVER_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.cp.caExistingSecret }}
+            - name: SB_CP_CA_FILE
+              value: "/etc/secrets-bridge/cp-ca/{{ .Values.cp.caExistingSecretKey }}"
+            {{- end }}
+            {{- with .Values.cp.heartbeatInterval }}
+            - name: SB_HEARTBEAT_INTERVAL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.cp.claimInterval }}
+            - name: SB_CLAIM_INTERVAL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.cp.claimConcurrency }}
+            - name: SB_CLAIM_CONCURRENCY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.providers.vault.enabled }}
+            {{- with .Values.providers.vault.addr }}
+            - name: SB_VAULT_ADDR
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.providers.vault.namespace }}
+            - name: SB_VAULT_NAMESPACE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.providers.vault.kvMount }}
+            - name: SB_VAULT_KV_MOUNT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.providers.vault.kvPrefix }}
+            - name: SB_VAULT_KV_PREFIX
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.providers.vault.kubernetesRole }}
+            - name: SB_VAULT_KUBERNETES_ROLE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.providers.awsSecretsManager.enabled }}
+            {{- with .Values.providers.awsSecretsManager.region }}
+            - name: SB_AWS_REGION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.providers.awsSecretsManager.endpoint }}
+            - name: SB_AWS_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.providers.awsSecretsManager.roleArn }}
+            - name: SB_AWS_ROLE_ARN
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.identity.existingSecret }}
+          {{- if .Values.cp.caExistingSecret }}
+          volumeMounts:
+            - name: cp-ca
+              mountPath: /etc/secrets-bridge/cp-ca
+              readOnly: true
+          {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.cp.caExistingSecret }}
+      volumes:
+        - name: cp-ca
+          secret:
+            secretName: {{ .Values.cp.caExistingSecret }}
+            items:
+              - key: {{ .Values.cp.caExistingSecretKey }}
+                path: {{ .Values.cp.caExistingSecretKey }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

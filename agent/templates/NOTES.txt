@@ -1,0 +1,34 @@
+─────────────────────────────────────────────────────────────────────
+Secrets Bridge agent {{ .Chart.AppVersion }} — chart {{ .Chart.Version }}
+─────────────────────────────────────────────────────────────────────
+
+Release:      {{ .Release.Name }}
+Namespace:    {{ .Release.Namespace }}
+Cluster:      {{ .Values.clusterName }}
+CP endpoint:  {{ .Values.cp.endpoint }}
+
+{{- if .Values.cp.insecureTransport }}
+
+  ⚠️  cp.insecureTransport=true — the agent will trust plain
+  HTTP / unverified TLS to the CP. NEVER ship this outside local
+  dev.
+
+{{- end }}
+
+Once the pod is up, verify on the CP side:
+
+  GET {{ .Values.cp.endpoint }}/api/v1/agents
+
+The new agent should appear with `status: active` and a recent
+`last_seen_at` within ~30s.
+
+If the agent doesn't show up:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "secrets-bridge-agent.fullname" . }}
+
+Look for:
+  - "registered agent public key"  (good: wire-envelope path live)
+  - "starting heartbeat loop"      (good: identity Secret resolved)
+  - any "401" / "rejected"         (bad: rotate SB_AGENT_SECRET on
+                                          the CP and re-create the
+                                          identity Secret)
