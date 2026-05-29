@@ -1,0 +1,246 @@
+name: ci
+
+# Gates every chart change with four jobs:
+#
+#   1. lint          — `helm lint` for each chart
+#   2. template      — `helm template` under realistic presets and
+#                      `kubeconform` against the rendered manifests
+#                      to catch any K8s-API-shape regression before
+#                      it reaches a cluster
+#   3. safety-rails  — verifies the documented render-time `fail`
+#                      guards actually trip (otherwise the safety
+#                      story is theatre, not code)
+#   4. release-name  — sanity check that the chart names + per-component
+#                      fullnames truncate cleanly to ≤63 chars under a
+#                      long release name (K8s label length limit)
+#
+# CI does NOT publish. OCI publish to GHCR lands in a follow-up
+# workflow gated on git tags `v*.*.*`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'secrets-bridge/**'
+      - 'agent/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'secrets-bridge/**'
+      - 'agent/**'
+      - '.github/workflows/ci.yml'
+
+permissions:
+  contents: read
+
+env:
+  HELM_VERSION: v3.20.0
+  KUBECONFORM_VERSION: v0.7.0
+
+jobs:
+  lint:
+    name: helm lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        chart: [secrets-bridge, agent]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: helm lint ${{ matrix.chart }}
+        run: helm lint ${{ matrix.chart }}/
+
+  template:
+    name: helm template + kubeconform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: Render + validate secrets-bridge (dev preset)
+        run: |
+          mkdir -p out
+          helm template ci-dev secrets-bridge/ \
+            --namespace secrets-bridge \
+            --set env=dev \
+            --set kms.backend=local \
+            --set ingress.host=sb.example.com \
+            > out/secrets-bridge-dev.yaml
+          kubeconform -strict -summary -skip CustomResourceDefinition \
+            -ignore-missing-schemas \
+            out/secrets-bridge-dev.yaml
+
+      - name: Render + validate secrets-bridge (production aws-kms preset)
+        run: |
+          helm template ci-prod secrets-bridge/ \
+            --namespace secrets-bridge \
+            --set env=production \
+            --set kms.backend=aws-kms \
+            --set kms.awsKms.region=us-east-1 \
+            --set kms.awsKms.keyId=alias/sb-wrap \
+            --set 'api.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::123456789012:role/sb-api' \
+            --set ingress.host=sb.example.com \
+            --set ingress.tls.clusterIssuer=letsencrypt-prod \
+            --set controller.config.leaderElect=true \
+            --set controller.metricsService.enabled=true \
+            --set controller.config.metricsAddr=":8080" \
+            > out/secrets-bridge-prod.yaml
+          kubeconform -strict -summary -skip CustomResourceDefinition \
+            -ignore-missing-schemas \
+            out/secrets-bridge-prod.yaml
+
+      - name: Render + validate secrets-bridge (production vault-transit preset)
+        run: |
+          helm template ci-vault secrets-bridge/ \
+            --namespace secrets-bridge \
+            --set env=production \
+            --set kms.backend=vault-transit \
+            --set kms.vaultTransit.addr=https://vault.example.com \
+            --set kms.vaultTransit.key=sb-wrap \
+            --set ingress.host=sb.example.com \
+            > out/secrets-bridge-vault.yaml
+          kubeconform -strict -summary -skip CustomResourceDefinition \
+            -ignore-missing-schemas \
+            out/secrets-bridge-vault.yaml
+
+      - name: Render + validate agent (full preset with NetworkPolicy)
+        run: |
+          helm template ci-agent agent/ \
+            --namespace secrets-bridge \
+            --set clusterName=ci-cluster \
+            --set cp.endpoint=https://sb.example.com \
+            --set providers.vault.enabled=true \
+            --set providers.vault.addr=http://vault.svc:8200 \
+            --set providers.vault.kubernetesRole=ci-agent \
+            --set networkPolicy.enabled=true \
+            --set 'networkPolicy.allowCIDRs={10.0.0.10/32,10.0.0.20/32}' \
+            --set podDisruptionBudget.enabled=true \
+            > out/agent.yaml
+          kubeconform -strict -summary -skip CustomResourceDefinition \
+            -ignore-missing-schemas \
+            out/agent.yaml
+
+      - name: Render + validate agent (private-CA TLS preset)
+        run: |
+          helm template ci-agent-ca agent/ \
+            --namespace secrets-bridge \
+            --set clusterName=ci-cluster \
+            --set cp.endpoint=https://sb.internal \
+            --set cp.caExistingSecret=cp-ca \
+            --set cp.tlsServerName=sb.internal \
+            > out/agent-ca.yaml
+          kubeconform -strict -summary -skip CustomResourceDefinition \
+            -ignore-missing-schemas \
+            out/agent-ca.yaml
+
+      - name: Upload rendered manifests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-manifests
+          path: out/
+          retention-days: 7
+
+  safety-rails:
+    name: safety rails trip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      # Each case must FAIL — we invert the exit code so the job
+      # only succeeds when the safety rail does.
+      - name: production + LocalKMS must be rejected
+        run: |
+          if helm template r secrets-bridge/ \
+              --set env=production --set kms.backend=local \
+              --set ingress.host=x.example.com \
+              > /dev/null 2>&1; then
+            echo "::error::production + kms.backend=local rendered successfully — safety rail BROKEN"
+            exit 1
+          fi
+          echo "OK: production + local rejected"
+
+      - name: unknown env value must be rejected
+        run: |
+          if helm template r secrets-bridge/ \
+              --set env=staging --set kms.backend=aws-kms \
+              --set ingress.host=x.example.com \
+              > /dev/null 2>&1; then
+            echo "::error::env=staging rendered — safety rail BROKEN"
+            exit 1
+          fi
+          echo "OK: unknown env rejected"
+
+      - name: unknown kms.backend must be rejected
+        run: |
+          if helm template r secrets-bridge/ \
+              --set env=production --set kms.backend=azure-key-vault \
+              --set ingress.host=x.example.com \
+              > /dev/null 2>&1; then
+            echo "::error::kms.backend=azure-key-vault rendered — safety rail BROKEN"
+            exit 1
+          fi
+          echo "OK: unknown backend rejected"
+
+      - name: agent missing clusterName must be rejected
+        run: |
+          if helm template a agent/ \
+              --set cp.endpoint=https://x.example.com \
+              > /dev/null 2>&1; then
+            echo "::error::agent without clusterName rendered — safety rail BROKEN"
+            exit 1
+          fi
+          echo "OK: agent missing clusterName rejected"
+
+      - name: agent plain HTTP without insecureTransport must be rejected
+        run: |
+          if helm template a agent/ \
+              --set clusterName=ci \
+              --set cp.endpoint=http://insecure.example.com \
+              > /dev/null 2>&1; then
+            echo "::error::agent with http:// + no insecure flag rendered — safety rail BROKEN"
+            exit 1
+          fi
+          echo "OK: agent plain http rejected"
+
+  release-name:
+    name: release-name truncation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      # K8s label values are capped at 63 chars. The chart's helpers
+      # `trunc 63` everything they generate, but a long release name
+      # paired with a long component suffix can still slip past if a
+      # template forgets to wrap a helper. This job exercises every
+      # rendered Service/Deployment/ServiceAccount name with a 50-char
+      # release name and greps for >63-char metadata.name lines.
+      - name: render with a long release name
+        run: |
+          LONG_NAME=$(printf 'a%.0s' {1..50})
+          helm template "$LONG_NAME" secrets-bridge/ \
+            --set env=dev --set kms.backend=local \
+            --set ingress.host=x.example.com \
+            > out.yaml
+          # Find any `  name: xxx` line where xxx is >63 chars
+          awk '/^  name: / { n=$2; if (length(n) > 63) { print "TOO LONG ("length(n)"): "n; bad=1 } } END { exit bad?1:0 }' out.yaml
