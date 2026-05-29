@@ -1,0 +1,293 @@
+# Secrets Bridge — control plane Helm chart.
+#
+# Operator orientation:
+#   1. Pick an `ingress.host` (the SPA + api both answer here).
+#   2. Pick a `kms.backend` (`vault-transit` OR `aws-kms`) — defaults
+#      below pin `vault-transit` so a forgotten override doesn't
+#      silently boot LocalKMS (the api refuses to boot when
+#      `kms.backend=local` AND `env != "dev"`).
+#   3. Point the api at Postgres + Redis via `api.config.databaseUrl`
+#      / `redisUrl` OR reference an existing Secret via
+#      `secrets.existingSecret`.
+#   4. Pre-create the env Secret with everything the api needs:
+#      `SB_JWT_SECRET`, `SB_WRAP_MASTER_KEY` (dev only), DB / Redis
+#      DSNs, and the KMS-specific knobs. See README "Required
+#      secrets" for the exact key list per backend.
+
+# ── Global ───────────────────────────────────────────────────────────
+
+# Deployment mode. Recognised values:
+#   "production" — LocalKMS REJECTED at boot; dev seeder skipped.
+#                  This is the default.
+#   "dev"        — LocalKMS allowed; the api seeds three users on
+#                  first boot (admin/approver/requester).
+#
+# Threaded into every component's pod env as SB_ENV.
+env: production
+
+global:
+  imageRegistry: ghcr.io
+  # Image pull secrets the cluster ServiceAccount should reference.
+  # Leave empty when pulling from a public registry like GHCR.
+  imagePullSecrets: []
+  # Cluster-wide labels merged onto every resource the chart renders.
+  commonLabels: {}
+  commonAnnotations: {}
+
+# Override the inferred name (defaults to `secrets-bridge`).
+nameOverride: ""
+fullnameOverride: ""
+
+# ── Required secrets ─────────────────────────────────────────────────
+#
+# By default the chart references an existing Kubernetes Secret that
+# the operator pre-creates with every env var the api / worker need:
+#
+#   - SB_JWT_SECRET
+#   - SB_WRAP_MASTER_KEY            (only when env=dev)
+#   - DATABASE_URL
+#   - REDIS_URL
+#   - SB_KMS_VAULT_ADDR / TOKEN / KEY  (kms.backend=vault-transit)
+#   - SB_KMS_AWS_REGION / KEY_ID       (kms.backend=aws-kms)
+#
+# Operators wiring through External Secrets Operator (ESO) point an
+# ExternalSecret at this name and let the chart consume the result
+# transparently — pull the bag from AWS Secrets Manager, HashiCorp
+# Vault, or any other ESO backend; the chart only sees the
+# Kubernetes Secret it produces.
+secrets:
+  existingSecret: secrets-bridge-env
+
+  # Pod rollout on Secret rotation. The chart can't readily detect
+  # ESO-driven updates to the referenced Secret (Helm reads cluster
+  # state only at install/upgrade time). When `reloader.enabled` is
+  # true the chart stamps the `stakater.com/reloader` annotation on
+  # every Deployment that envFrom's the bag, and stakater/reloader
+  # rolls the pods within ~30s of a Secret change.
+  #
+  # See https://github.com/stakater/Reloader. Install once per
+  # cluster — the chart only adds the annotation; the reloader
+  # controller is a cluster-wide singleton.
+  reloader:
+    enabled: true
+
+# ── KMS ──────────────────────────────────────────────────────────────
+
+kms:
+  # SB_KMS_BACKEND. One of: vault-transit, aws-kms, local.
+  # The `local` backend will REFUSE to boot unless `env=dev`. The
+  # chart additionally refuses to render a manifest with the local
+  # backend AND env=production via a templated check (see
+  # _kms-validation.tpl).
+  backend: vault-transit
+
+  vaultTransit:
+    # SB_KMS_VAULT_ADDR — only consulted when backend=vault-transit.
+    # Leave empty to fall back to the `existingSecret` reference.
+    addr: ""
+    # SB_KMS_VAULT_MOUNT — defaults to "transit" in the api binary.
+    mount: ""
+    # SB_KMS_VAULT_KEY — the Vault transit key name. Required when
+    # backend=vault-transit.
+    key: ""
+
+  awsKms:
+    # SB_KMS_AWS_REGION — only consulted when backend=aws-kms.
+    region: ""
+    # SB_KMS_AWS_KEY_ID — CMK ARN, key id, or `alias/<name>`.
+    keyId: ""
+    # SB_KMS_AWS_ENDPOINT — optional (LocalStack / VPC endpoint).
+    endpoint: ""
+
+# ── api ──────────────────────────────────────────────────────────────
+
+api:
+  enabled: true
+  image:
+    repository: secrets-bridge/api
+    tag: ""              # defaults to .Chart.AppVersion when empty
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  port: 8080
+
+  # IRSA: when backend=aws-kms, set this to the role ARN that grants
+  # kms:Encrypt / Decrypt / GenerateDataKey on the configured CMK.
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+    automountServiceAccountToken: true
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: 8080
+    initialDelaySeconds: 2
+    periodSeconds: 5
+
+  # Non-secret config; secret-bearing env vars are pulled from
+  # `secrets.existingSecret` via envFrom.
+  config:
+    logLevel: info
+    gitopsEnabled: false
+    jwtTokenTTL: 8h
+
+  # Horizontal pod autoscaler. Off by default; flip enabled when the
+  # metrics-server / Prometheus adapter is wired.
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  networkPolicy:
+    enabled: false
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ── ui ───────────────────────────────────────────────────────────────
+
+ui:
+  enabled: true
+  image:
+    repository: secrets-bridge/ui
+    tag: ""              # defaults to .Chart.AppVersion when empty
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  port: 8080            # nginx in the official image listens on 8080
+
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    fsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: [ALL]
+
+  livenessProbe:
+    httpGet:
+      path: /
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 8080
+    initialDelaySeconds: 2
+    periodSeconds: 5
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 70
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ── Shared ingress ───────────────────────────────────────────────────
+#
+# One Ingress object fronts BOTH ui and api on the SAME host. Path
+# routing:
+#   /api/v1/*           → api Service
+#   /healthz, /readyz   → api Service (probe pass-through)
+#   /metrics            → api Service (Prometheus scrape, but you
+#                                       probably want NetworkPolicy
+#                                       blocking external access)
+#   / (catch-all)       → ui Service
+#
+# Same-origin posture means the SPA calls `/api/v1/*` relative to its
+# own host — no CORS, no separate domain, one TLS cert.
+
+ingress:
+  enabled: true
+  className: nginx
+  host: secrets-bridge.example.com
+  annotations: {}
+  # Path prefixes routed to the api. Adjust if your reverse proxy
+  # rewrites paths.
+  apiPaths:
+    - /api
+    - /healthz
+    - /readyz
+    - /metrics
+  # All non-api traffic falls through to the ui.
+  uiPath: /
+  tls:
+    enabled: true
+    secretName: secrets-bridge-tls
+    # Set to "" when bringing your own pre-issued cert; otherwise
+    # cert-manager.io/cluster-issuer: <name> is added.
+    clusterIssuer: ""
+
+# ── worker (scaffold — full impl lands in a follow-up PR) ────────────
+worker:
+  enabled: false
+
+# ── controller (scaffold — full impl lands in a follow-up PR) ────────
+controller:
+  enabled: false

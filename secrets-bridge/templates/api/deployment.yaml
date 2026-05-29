@@ -1,0 +1,117 @@
+{{- if .Values.api.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "secrets-bridge.componentName" (dict "ctx" . "component" "api") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+  annotations:
+    {{- if and .Values.secrets.reloader.enabled .Values.secrets.existingSecret }}
+    secret.reloader.stakater.com/reload: {{ .Values.secrets.existingSecret | quote }}
+    {{- end }}
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "secrets-bridge.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "secrets-bridge.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 8 }}
+        {{- with .Values.api.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Force pod rollout when the env Secret rotates. The chart
+        # doesn't own the Secret (it's pre-created by the operator
+        # via ESO / terragrunt), so we hash a stable input the
+        # operator updates whenever the bag changes.
+        checksum/config: {{ printf "%s|%s|%s" .Values.env .Values.kms.backend (default "" .Values.secrets.existingSecret) | sha256sum }}
+        {{- with .Values.api.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "secrets-bridge.componentServiceAccountName" (dict "ctx" . "component" "api" "spec" .Values.api.serviceAccount) }}
+      {{- with .Values.api.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: {{ include "secrets-bridge.image" (dict "ctx" . "image" .Values.api.image) }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          {{- with .Values.api.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.port }}
+              protocol: TCP
+          env:
+            - name: API_ADDR
+              value: ":{{ .Values.api.port }}"
+            - name: SB_ENV
+              value: {{ .Values.env | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.api.config.logLevel | quote }}
+            - name: SB_GITOPS_ENABLED
+              value: {{ .Values.api.config.gitopsEnabled | quote }}
+            - name: SB_JWT_TOKEN_TTL
+              value: {{ .Values.api.config.jwtTokenTTL | quote }}
+            - name: SB_KMS_BACKEND
+              value: {{ .Values.kms.backend | quote }}
+            {{- if eq (lower .Values.kms.backend) "vault-transit" }}
+            {{- with .Values.kms.vaultTransit.addr }}
+            - name: SB_KMS_VAULT_ADDR
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kms.vaultTransit.mount }}
+            - name: SB_KMS_VAULT_MOUNT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kms.vaultTransit.key }}
+            - name: SB_KMS_VAULT_KEY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if eq (lower .Values.kms.backend) "aws-kms" }}
+            {{- with .Values.kms.awsKms.region }}
+            - name: SB_KMS_AWS_REGION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kms.awsKms.keyId }}
+            - name: SB_KMS_AWS_KEY_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kms.awsKms.endpoint }}
+            - name: SB_KMS_AWS_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+          {{- if .Values.secrets.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.secrets.existingSecret }}
+          {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.api.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.api.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end -}}

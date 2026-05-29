@@ -1,0 +1,52 @@
+apiVersion: v2
+name: secrets-bridge
+description: |
+  Secrets Bridge control plane — the api (Fiber/Go), worker (sweepers +
+  GitOps poller), ui (React SPA), and controller (Kubernetes
+  reconciler), bundled in one chart with a shared ingress.
+
+  The agent runs in workload clusters under a separate `agent` chart;
+  the control plane stays in one operator-friendly install.
+type: application
+home: https://secrets-bridge.io
+icon: https://raw.githubusercontent.com/secrets-bridge/.github/main/profile/logo.svg
+sources:
+  - https://github.com/secrets-bridge/api
+  - https://github.com/secrets-bridge/worker
+  - https://github.com/secrets-bridge/ui
+  - https://github.com/secrets-bridge/controller
+maintainers:
+  - name: secrets-bridge
+    url: https://github.com/secrets-bridge
+
+# Pre-v0.1.0 — the chart and the images it ships are both rolling on
+# the `:dev` tag. The first release will bump both to v0.1.0.
+version: 0.0.1
+appVersion: "dev"
+
+kubeVersion: ">=1.27.0-0"
+
+keywords:
+  - secrets
+  - secrets-management
+  - vault
+  - aws-secrets-manager
+  - kubernetes
+  - control-plane
+  - oss
+  - workflow
+  - approvals
+  - rbac
+  - audit
+
+annotations:
+  artifacthub.io/category: security
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/links: |
+    - name: Docs
+      url: https://secrets-bridge.io
+    - name: Repository
+      url: https://github.com/secrets-bridge
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial scaffold — api + ui + shared ingress
