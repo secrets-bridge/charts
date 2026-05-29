@@ -1,0 +1,143 @@
+{{- if .Values.worker.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "secrets-bridge.componentName" (dict "ctx" . "component" "worker") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge.componentLabels" (dict "ctx" . "component" "worker") | nindent 4 }}
+  annotations:
+    {{- if and .Values.secrets.reloader.enabled .Values.secrets.existingSecret }}
+    secret.reloader.stakater.com/reload: {{ .Values.secrets.existingSecret | quote }}
+    {{- end }}
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "secrets-bridge.componentSelectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "secrets-bridge.componentSelectorLabels" (dict "ctx" . "component" "worker") | nindent 8 }}
+        {{- with .Values.worker.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ printf "%s|%s|%s" .Values.env .Values.kms.backend (default "" .Values.secrets.existingSecret) | sha256sum }}
+        {{- with .Values.worker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "secrets-bridge.componentServiceAccountName" (dict "ctx" . "component" "worker" "spec" .Values.worker.serviceAccount) }}
+      {{- with .Values.worker.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: {{ include "secrets-bridge.image" (dict "ctx" . "image" .Values.worker.image) }}
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          {{- with .Values.worker.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            # Loopback-only probes port. Not exposed via a Service —
+            # the host: 127.0.0.1 on the probes keeps it internal.
+            - name: probes
+              containerPort: {{ .Values.worker.probesPort }}
+              protocol: TCP
+          env:
+            - name: SB_WORKER_LOCAL_ADDR
+              value: "127.0.0.1:{{ .Values.worker.probesPort }}"
+            - name: SB_ENV
+              value: {{ .Values.env | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.worker.config.logLevel | quote }}
+            - name: SB_WORKER_GITOPS_ENABLED
+              value: {{ .Values.worker.config.gitopsEnabled | quote }}
+            - name: SB_KMS_BACKEND
+              value: {{ .Values.kms.backend | quote }}
+            {{- if eq (lower .Values.kms.backend) "vault-transit" }}
+            {{- with .Values.kms.vaultTransit.addr }}
+            - name: SB_KMS_VAULT_ADDR
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kms.vaultTransit.mount }}
+            - name: SB_KMS_VAULT_MOUNT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kms.vaultTransit.key }}
+            - name: SB_KMS_VAULT_KEY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if eq (lower .Values.kms.backend) "aws-kms" }}
+            {{- with .Values.kms.awsKms.region }}
+            - name: SB_KMS_AWS_REGION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kms.awsKms.keyId }}
+            - name: SB_KMS_AWS_KEY_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.kms.awsKms.endpoint }}
+            - name: SB_KMS_AWS_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- range $key, $val := dict
+                "wrapsExpiredInterval" "SB_WORKER_WRAPS_EXPIRED_INTERVAL"
+                "secretsStaleInterval" "SB_WORKER_SECRETS_STALE_INTERVAL"
+                "agentsStaleInterval"  "SB_WORKER_AGENTS_STALE_INTERVAL"
+                "jobsRecoveryInterval" "SB_WORKER_JOBS_RECOVERY_INTERVAL"
+                "discoverInterval"     "SB_WORKER_DISCOVER_INTERVAL"
+                "secretsStaleAfter"    "SB_WORKER_SECRETS_STALE_AFTER"
+                "agentsStaleAfter"     "SB_WORKER_AGENTS_STALE_AFTER"
+                "gitopsPollInterval"   "SB_WORKER_GITOPS_POLL_INTERVAL"
+                "gitopsTimeoutInterval" "SB_WORKER_GITOPS_TIMEOUT_INTERVAL"
+                "gitopsHttpTimeout"    "SB_WORKER_GITOPS_HTTP_TIMEOUT" }}
+            {{- with index $.Values.worker.config $key }}
+            - name: {{ $val }}
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.worker.config.gitopsBatchSize }}
+            - name: SB_WORKER_GITOPS_BATCH_SIZE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.worker.notifications.webhookUrl }}
+            - name: SB_WORKER_WEBHOOK_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SB_WORKER_WEBHOOK_SLACK_FORMAT
+              value: {{ .Values.worker.notifications.slackFormat | quote }}
+            {{- with .Values.worker.discoverTargetsJSON }}
+            - name: SB_DISCOVER_TARGETS_JSON
+              value: {{ . | quote }}
+            {{- end }}
+          {{- if .Values.secrets.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.secrets.existingSecret }}
+          {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.worker.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.worker.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end -}}
