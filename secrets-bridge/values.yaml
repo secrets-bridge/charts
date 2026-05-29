@@ -284,9 +284,111 @@ ingress:
     # cert-manager.io/cluster-issuer: <name> is added.
     clusterIssuer: ""
 
-# ── worker (scaffold — full impl lands in a follow-up PR) ────────────
+# ── worker ───────────────────────────────────────────────────────────
+#
+# Background sweepers + the GitOps observation poller. The worker
+# shares the api's env Secret (DATABASE_URL, REDIS_URL, KMS knobs)
+# but never exposes a service — its probes listen on loopback only.
+
 worker:
-  enabled: false
+  enabled: true
+  image:
+    repository: secrets-bridge/worker
+    tag: ""              # defaults to .Chart.AppVersion when empty
+    pullPolicy: IfNotPresent
+  # The worker uses a per-sweeper Redis lock for leader election;
+  # replicas > 1 is supported (N-1 will silently skip ticks).
+  replicaCount: 1
+
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+    automountServiceAccountToken: true
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+
+  # Loopback probes — internal-only by design (BRD: agent has no
+  # inbound listener; worker mirrors the posture).
+  probesPort: 8091
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 8091
+      host: 127.0.0.1
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: 8091
+      host: 127.0.0.1
+    initialDelaySeconds: 2
+    periodSeconds: 5
+
+  # Non-secret config; secret-bearing env vars come from
+  # `secrets.existingSecret` via envFrom (same bag as the api).
+  config:
+    logLevel: info
+    # Mirror the api's GitOps flag — BOTH sides must agree.
+    gitopsEnabled: false
+    # Sweep cadences. Defaults match the worker binary; uncomment to
+    # override.
+    # wrapsExpiredInterval: 1m
+    # secretsStaleInterval: 5m
+    # agentsStaleInterval: 1m
+    # jobsRecoveryInterval: 30s
+    # discoverInterval: 1h
+    # secretsStaleAfter: 24h
+    # agentsStaleAfter: 5m
+    # gitopsPollInterval: 15s
+    # gitopsTimeoutInterval: 1m
+    # gitopsHttpTimeout: 15s
+    # gitopsBatchSize: 20
+
+  # Notifications. Set `webhookUrl` to the channel that should
+  # receive sweeper failures; flip slackFormat to true for the
+  # `{"text": "..."}` envelope that Slack inbound webhooks expect.
+  notifications:
+    webhookUrl: ""
+    slackFormat: false
+
+  # SB_DISCOVER_TARGETS_JSON — list of (cluster, provider, scope)
+  # entries the discover scheduler enqueues jobs for. Format:
+  #   [{"cluster":"prod-eu","provider":"vault","scope":{...}}, ...]
+  # Empty disables the discover sweeper. Future PR: replace with a
+  # provider_connections admin API (api repo).
+  discoverTargetsJSON: ""
+
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 # ── controller (scaffold — full impl lands in a follow-up PR) ────────
 controller:
