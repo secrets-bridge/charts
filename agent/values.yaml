@@ -180,6 +180,20 @@ providers:
     # SB_AWS_ROLE_ARN — operator may also wire IRSA via
     # serviceAccount.annotations to avoid this entirely
     roleArn: ""
+    # SB_AWS_TAG_FILTER — every AWS tag listed here MUST be present on
+    # a secret (with the same value) for it to survive ListMetadata
+    # filtering during discovery. Use to lock an agent instance to a
+    # specific environment / tenant / project. Pair with the same tag
+    # condition on the IRSA policy for defense in depth — the IAM tag
+    # condition gates the value fetch, this filter gates enumeration.
+    # AWS's ListSecrets API does NOT honour resource-tag IAM conditions
+    # so without this, the agent enumerates every secret name in the
+    # account even when it can never resolve them.
+    # Rendered as JSON into SB_AWS_TAG_FILTER. Empty / unset = no filter.
+    # Example:
+    #   tagFilter:
+    #     EnvironmentName: E-Government-Uat
+    tagFilter: {}
 
 # ── Reloader ─────────────────────────────────────────────────────────
 

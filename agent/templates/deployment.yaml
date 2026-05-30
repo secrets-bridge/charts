@@ -111,6 +111,10 @@ spec:
             - name: SB_AWS_ROLE_ARN
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.providers.awsSecretsManager.tagFilter }}
+            - name: SB_AWS_TAG_FILTER
+              value: {{ . | toJson | quote }}
+            {{- end }}
             {{- end }}
           envFrom:
             - secretRef:
