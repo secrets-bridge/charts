@@ -328,21 +328,41 @@ worker:
     capabilities:
       drop: [ALL]
 
-  # Loopback probes — internal-only by design (BRD: agent has no
-  # inbound listener; worker mirrors the posture).
+  # Probes addressability.
+  #
+  # The worker binds an HTTP listener for /healthz + /readyz + /metrics.
+  # `bindAddress` is the address it listens on inside the pod, plumbed
+  # into the container as SB_WORKER_LOCAL_ADDR.
+  #
+  # IMPORTANT: kubelet runs httpGet probes from the NODE's network
+  # namespace (not the pod's). If the listener binds 127.0.0.1 and the
+  # probe is also 127.0.0.1, the kubelet hits the node's loopback —
+  # nothing answers and the worker stays NotReady forever.
+  #
+  # The chart defaults to 0.0.0.0 so the probe (running on the node)
+  # can reach the listener via the pod IP. The worker still has NO
+  # Service in front of it — the only reachability into 0.0.0.0:8091
+  # is from inside the pod's netns OR via the pod IP from the same VPC
+  # (which a NetworkPolicy in the same chart blocks by default).
+  #
+  # If you want the strict loopback-only posture (BRD §15 — agent has
+  # no inbound listener), set `bindAddress: 127.0.0.1` AND switch
+  # `livenessProbe`/`readinessProbe` to an `exec` probe. That
+  # requires a base image with a shell + wget/curl; the default
+  # distroless/static doesn't carry one, so the chart's default
+  # posture is pod-IP probing.
   probesPort: 8091
+  bindAddress: 0.0.0.0
   livenessProbe:
     httpGet:
       path: /healthz
       port: 8091
-      host: 127.0.0.1
     initialDelaySeconds: 5
     periodSeconds: 10
   readinessProbe:
     httpGet:
       path: /readyz
       port: 8091
-      host: 127.0.0.1
     initialDelaySeconds: 2
     periodSeconds: 5
 

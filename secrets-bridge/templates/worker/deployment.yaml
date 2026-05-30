@@ -43,14 +43,16 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           ports:
-            # Loopback-only probes port. Not exposed via a Service —
-            # the host: 127.0.0.1 on the probes keeps it internal.
+            # Probes port. NOT fronted by a Service — reachability
+            # is the pod IP, scoped via NetworkPolicy. See values.yaml
+            # `worker.bindAddress` for the loopback-only posture and
+            # why the default is 0.0.0.0.
             - name: probes
               containerPort: {{ .Values.worker.probesPort }}
               protocol: TCP
           env:
             - name: SB_WORKER_LOCAL_ADDR
-              value: "127.0.0.1:{{ .Values.worker.probesPort }}"
+              value: "{{ default "0.0.0.0" .Values.worker.bindAddress }}:{{ .Values.worker.probesPort }}"
             - name: SB_ENV
               value: {{ .Values.env | quote }}
             - name: LOG_LEVEL

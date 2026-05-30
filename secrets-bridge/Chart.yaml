@@ -48,5 +48,12 @@ annotations:
     - name: Repository
       url: https://github.com/secrets-bridge
   artifacthub.io/changes: |
+    - kind: fixed
+      description: |
+        worker: bind 0.0.0.0:probesPort by default + drop host:127.0.0.1
+        from probes. Kubelet runs httpGet probes from the node netns;
+        with the previous 127.0.0.1-bound listener + 127.0.0.1 probe
+        target the worker stayed NotReady forever. Loopback-only posture
+        is still available via bindAddress: 127.0.0.1 + an exec probe.
     - kind: added
       description: Initial scaffold — api + ui + shared ingress
