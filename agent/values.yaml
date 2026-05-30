@@ -192,7 +192,7 @@ providers:
     # Rendered as JSON into SB_AWS_TAG_FILTER. Empty / unset = no filter.
     # Example:
     #   tagFilter:
-    #     EnvironmentName: E-Government-Uat
+    #     Environment: production
     tagFilter: {}
 
 # ── Reloader ─────────────────────────────────────────────────────────
