@@ -65,20 +65,38 @@ containerSecurityContext:
   capabilities:
     drop: [ALL]
 
-# Loopback-only probes. The agent has NO public listener (BRD §15).
+# Probes addressability.
+#
+# The agent binds an HTTP listener for /healthz + /readyz + /metrics on
+# `bindAddress:probesPort` inside the pod (plumbed in as SB_LOCAL_ADDR).
+#
+# IMPORTANT: kubelet runs httpGet probes from the NODE's network
+# namespace (not the pod's). With the listener bound to 127.0.0.1 AND
+# the probe target 127.0.0.1, kubelet hits the node's loopback —
+# nothing answers and the agent stays NotReady forever.
+#
+# The chart defaults to 0.0.0.0 so the probe (running on the node)
+# can reach the listener via the pod IP. The agent still has NO
+# Service in front of it — the only reachability into 0.0.0.0:8090
+# is from inside the pod's netns OR via the pod IP from the same VPC
+# (which a NetworkPolicy in the same chart blocks by default).
+#
+# Loopback-only posture (BRD §15) is still available — set
+# `bindAddress: 127.0.0.1` AND switch the probes to an `exec`
+# command (requires a base image with a shell + wget/curl, which
+# distroless/static does not carry).
 probesPort: 8090
+bindAddress: 0.0.0.0
 livenessProbe:
   httpGet:
     path: /healthz
     port: 8090
-    host: 127.0.0.1
   initialDelaySeconds: 5
   periodSeconds: 10
 readinessProbe:
   httpGet:
     path: /readyz
     port: 8090
-    host: 127.0.0.1
   initialDelaySeconds: 2
   periodSeconds: 5
 

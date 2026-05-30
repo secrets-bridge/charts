@@ -47,7 +47,7 @@ spec:
               protocol: TCP
           env:
             - name: SB_LOCAL_ADDR
-              value: "127.0.0.1:{{ .Values.probesPort }}"
+              value: "{{ default "0.0.0.0" .Values.bindAddress }}:{{ .Values.probesPort }}"
             - name: SB_CLUSTER_NAME
               value: {{ .Values.clusterName | quote }}
             - name: SB_CP_ENDPOINT
