@@ -43,5 +43,12 @@ annotations:
     - name: Agent repository
       url: https://github.com/secrets-bridge/agent
   artifacthub.io/changes: |
+    - kind: fixed
+      description: |
+        agent: bind 0.0.0.0:probesPort by default + drop host:127.0.0.1
+        from probes. Kubelet runs httpGet probes from the node netns;
+        with the previous 127.0.0.1-bound listener + 127.0.0.1 probe
+        target the agent stayed NotReady forever. Loopback-only posture
+        is still available via bindAddress: 127.0.0.1 + an exec probe.
     - kind: added
       description: Initial chart for the outbound agent
