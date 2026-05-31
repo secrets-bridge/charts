@@ -36,3 +36,40 @@ in production-mode deployments.
 {{- fail (printf "secrets-bridge: kms.backend=%q is not recognised (allowed: local, vault-transit, aws-kms)" .Values.kms.backend) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+OIDC validation (Slice F). Mirrors the api binary's boot-time
+checks so misconfiguration surfaces at `helm install` rather than
+CrashLoopBackOff. The api refuses to start when SB_OIDC_ISSUER is
+set without SB_OIDC_CLIENT_ID + SB_OIDC_REDIRECT_URL; the chart
+fail-fasts on the same conditions plus a sanity check on the
+groupMap shape (keys + values must be non-empty strings — the api
+binary's ValidateOIDCGroupMap rejects anything else).
+*/}}
+{{- define "secrets-bridge.validateOIDC" -}}
+{{- $oidc := .Values.api.config.oidc -}}
+{{- if $oidc.issuer -}}
+{{- if not $oidc.clientId -}}
+{{- fail "secrets-bridge: api.config.oidc.issuer is set but api.config.oidc.clientId is empty. Both are required to mount the OIDC routes." -}}
+{{- end -}}
+{{- if not $oidc.redirectUrl -}}
+{{- fail "secrets-bridge: api.config.oidc.issuer is set but api.config.oidc.redirectUrl is empty. Set it to the public callback URL registered with the IdP." -}}
+{{- end -}}
+{{- end -}}
+{{- /*
+  groupMap shape check — empty map is fine (the reconciler
+  short-circuits). Non-empty entries must carry non-empty
+  string keys + string values.
+*/ -}}
+{{- range $group, $role := $oidc.groupMap -}}
+{{- if not $group -}}
+{{- fail "secrets-bridge: api.config.oidc.groupMap contains an empty group name. Every key must be a non-empty IdP group identifier." -}}
+{{- end -}}
+{{- if not (kindIs "string" $role) -}}
+{{- fail (printf "secrets-bridge: api.config.oidc.groupMap[%q] must be a string (a Secrets Bridge role name), got %v" $group $role) -}}
+{{- end -}}
+{{- if not $role -}}
+{{- fail (printf "secrets-bridge: api.config.oidc.groupMap[%q] must be a non-empty Secrets Bridge role name." $group) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

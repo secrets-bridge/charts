@@ -46,6 +46,8 @@ The chart consumes a pre-existing Kubernetes Secret named by `secrets.existingSe
 | `DATABASE_URL` | ✓ | ✓ | ✓ | ✓ |
 | `REDIS_URL` | ✓ | ✓ | ✓ | ✓ |
 | `SB_JWT_SECRET` | ✓ | ✓ | ✓ | ✓ |
+| `SB_BOOTSTRAP_ADMIN_EMAIL` + `SB_BOOTSTRAP_ADMIN_PASSWORD` | optional | optional | optional | optional |
+| `SB_OIDC_CLIENT_SECRET` | _(when OIDC enabled)_ | ✓ | ✓ | ✓ |
 | `SB_DEV_SEED_PASSWORD` | _(optional dev)_ | — | — | optional |
 | `SB_WRAP_MASTER_KEY` | _(local only)_ | — | — | ✓ |
 | `SB_KMS_VAULT_ADDR` | — | ✓ | — | — |
@@ -55,6 +57,40 @@ The chart consumes a pre-existing Kubernetes Secret named by `secrets.existingSe
 | `SB_KMS_AWS_KEY_ID` | — | — | ✓ | — |
 
 For `aws-kms`, the api **also** needs IRSA — annotate the api ServiceAccount with the IAM role ARN that holds `kms:Encrypt` / `kms:Decrypt` / `kms:GenerateDataKey` on the configured CMK. See `api.serviceAccount.annotations`.
+
+## OIDC + auth (Slices A1 → E)
+
+When `api.config.oidc.issuer` is set, the chart wires the OIDC client routes (`/auth/oidc/{start,callback,logout,backchannel}`) into the api deployment. When it's left empty, only the local-admin `/auth/login` path is mounted — A1+A2 deployments work unchanged.
+
+```yaml
+api:
+  config:
+    # Optional first-boot grant of the seed `admin` role. Email +
+    # password are confidential and live in the env Secret.
+    bootstrap:
+      userId: ""
+
+    oidc:
+      issuer:             "https://authentik.example.com/application/o/secrets-bridge/"
+      clientId:           "secrets-bridge"
+      redirectUrl:        "https://secrets-bridge.example.com/api/v1/auth/oidc/callback"
+      scopes:             "openid profile email"
+      postLogoutRedirect: "https://secrets-bridge.example.com/"
+
+      # Group-claim → role mapping (Slice E). The chart serializes
+      # this map to JSON for SB_OIDC_GROUP_MAP at render time.
+      groupClaim: groups
+      groupMap:
+        sb-admins:    admin
+        sb-approvers: approver
+        sb-devs:      developer
+```
+
+**Critical invariant the api enforces — do NOT change this in the chart layer.** The reconciler ONLY touches `user_roles` rows with `granted_by = 'system:oidc'`. Admin-assigned grants (the `SB_BOOTSTRAP_ADMIN_USER_ID` grant, manually-curated team-scoped grants) are **invisible** to the reconciler and survive every reconcile pass — including the "user belongs to no mapped groups" case. The chart's job is to render the env vars; the api owns the security boundary.
+
+**`SB_OIDC_CLIENT_SECRET` lives in the env Secret**, not in values.yaml. The chart never renders it. Use ESO / sealed-secrets / sops to put it into the bag named by `secrets.existingSecret`.
+
+**Cookie attributes are not configurable.** The api hard-codes HttpOnly, SameSite=Strict, Secure (in production), MaxAge = AbsoluteTTL (8h). `env=dev` drops the Secure flag so local Vite dev works at http://localhost. Don't add knobs that let an operator weaken these from values — the security model assumes them.
 
 ## Safety rails (rendered before any pod boots)
 
