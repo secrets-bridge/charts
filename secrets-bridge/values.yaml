@@ -161,6 +161,69 @@ api:
     gitopsEnabled: false
     jwtTokenTTL: 8h
 
+    # Local-admin bootstrap (architect Q1). Optional user-id grant
+    # of the seed `admin` role on first boot. Email + password are
+    # confidential and live in the env Secret as
+    # SB_BOOTSTRAP_ADMIN_EMAIL / SB_BOOTSTRAP_ADMIN_PASSWORD.
+    # `bootstrap.userId` is NOT a credential — it's the opaque user
+    # id whose `user_roles` row gets created. Idempotent: once any
+    # admin grant exists, the bootstrap is a no-op.
+    bootstrap:
+      userId: ""
+
+    # OIDC client (architect Q4–Q6 + Slice E). When `oidc.issuer` is
+    # empty, the OIDC routes are NOT mounted and the local-admin
+    # /auth/login path stays the only sign-in surface.
+    #
+    # `clientSecret` is confidential → must live in the env Secret
+    # (SB_OIDC_CLIENT_SECRET). The chart never renders it.
+    oidc:
+      # SB_OIDC_ISSUER. Authentik example:
+      # https://authentik.example.com/application/o/secrets-bridge/
+      issuer: ""
+      # SB_OIDC_CLIENT_ID. Public identifier registered with the IdP.
+      clientId: ""
+      # SB_OIDC_REDIRECT_URL. Public callback URL; must match the
+      # IdP's registered redirect for the client.
+      redirectUrl: ""
+      # SB_OIDC_SCOPES. Space-separated. Add `groups` explicitly if
+      # your IdP requires it for the claim to appear.
+      scopes: "openid profile email"
+      # SB_OIDC_POST_LOGOUT_REDIRECT. Where the IdP sends users after
+      # the end_session_endpoint redirect.
+      postLogoutRedirect: ""
+
+      # --- Group-claim → role mapping (Slice E) -----------------
+      #
+      # The reconciler runs on every OIDC sign-in. Removing a user
+      # from `sb-admins` in the IdP revokes their admin grant at the
+      # NEXT login — no manual sync.
+      #
+      # Critical invariant the api enforces (do NOT relax this in
+      # any future "cleanup" — it IS the security boundary):
+      #   The reconciler ONLY touches user_roles rows with
+      #   `granted_by = 'system:oidc'`. Admin-assigned grants
+      #   (SB_BOOTSTRAP_ADMIN_USER_ID, manually-curated team-scoped
+      #   grants) are invisible to it and survive every reconcile
+      #   pass, including the "no matching groups" case.
+
+      # SB_OIDC_GROUP_CLAIM — ID-token claim carrying the user's
+      # groups. Authentik / Keycloak / Okta default to "groups".
+      groupClaim: groups
+
+      # SB_OIDC_GROUP_MAP — IdP-group → Secrets Bridge role.
+      # Example:
+      #   groupMap:
+      #     sb-admins:    admin
+      #     sb-approvers: approver
+      #     sb-devs:      developer
+      # Empty map → reconciler short-circuits; JIT users get no
+      # grants (admin assigns from the UI). The chart serializes
+      # this map to JSON for the env var; the api validates the
+      # shape at boot and FAILS LOUD on malformed JSON or empty
+      # keys/values.
+      groupMap: {}
+
   # Horizontal pod autoscaler. Off by default; flip enabled when the
   # metrics-server / Prometheus adapter is wired.
   autoscaling:

@@ -28,7 +28,7 @@ spec:
         # doesn't own the Secret (it's pre-created by the operator
         # via ESO / terragrunt), so we hash a stable input the
         # operator updates whenever the bag changes.
-        checksum/config: {{ printf "%s|%s|%s" .Values.env .Values.kms.backend (default "" .Values.secrets.existingSecret) | sha256sum }}
+        checksum/config: {{ printf "%s|%s|%s|%s|%s" .Values.env .Values.kms.backend (default "" .Values.secrets.existingSecret) (default "" .Values.api.config.oidc.issuer) (.Values.api.config.oidc.groupMap | toJson) | sha256sum }}
         {{- with .Values.api.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -61,6 +61,57 @@ spec:
               value: {{ .Values.api.config.gitopsEnabled | quote }}
             - name: SB_JWT_TOKEN_TTL
               value: {{ .Values.api.config.jwtTokenTTL | quote }}
+            {{- with .Values.api.config.bootstrap.userId }}
+            - name: SB_BOOTSTRAP_ADMIN_USER_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- /*
+              Slice F — OIDC env vars are gated on `issuer` so a
+              local-admin-only deployment doesn't carry dead
+              env vars. The api binary's OIDC routes only mount
+              when SB_OIDC_ISSUER is non-empty; everything else
+              in this block is consumed by the same code path.
+              Confidential bits (`SB_OIDC_CLIENT_SECRET`) live in
+              the env Secret (`secrets.existingSecret`).
+            */}}
+            {{- with .Values.api.config.oidc }}
+            {{- if .issuer }}
+            - name: SB_OIDC_ISSUER
+              value: {{ .issuer | quote }}
+            {{- with .clientId }}
+            - name: SB_OIDC_CLIENT_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .redirectUrl }}
+            - name: SB_OIDC_REDIRECT_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .scopes }}
+            - name: SB_OIDC_SCOPES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .postLogoutRedirect }}
+            - name: SB_OIDC_POST_LOGOUT_REDIRECT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .groupClaim }}
+            - name: SB_OIDC_GROUP_CLAIM
+              value: {{ . | quote }}
+            {{- end }}
+            {{- /*
+              Group-map → role mapping (Slice E). The reconciler
+              ONLY touches user_roles rows with `granted_by =
+              'system:oidc'`, so admin-assigned grants are safe.
+              Serialize the YAML map to JSON for the api binary's
+              `parseOIDCGroupMap` — an empty map stays empty {}
+              which short-circuits the reconciler.
+            */}}
+            {{- if .groupMap }}
+            - name: SB_OIDC_GROUP_MAP
+              value: {{ .groupMap | toJson | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
             - name: SB_KMS_BACKEND
               value: {{ .Values.kms.backend | quote }}
             {{- if eq (lower .Values.kms.backend) "vault-transit" }}
