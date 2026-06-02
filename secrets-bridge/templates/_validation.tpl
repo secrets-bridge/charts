@@ -73,3 +73,38 @@ binary's ValidateOIDCGroupMap rejects anything else).
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+MFA validation (Slice J). Mirrors the api binary's
+WebAuthnConfig.Validate at the chart layer: WebAuthn is gated on
+BOTH rpId AND rpOrigins. Setting one without the other is almost
+certainly a configuration mistake (the api logs the error and runs
+WebAuthn-disabled, but the operator deserves a fail-fast at install).
+TOTP has no required fields — the issuer always defaults.
+
+Hard rule on rpOrigins: every entry MUST be a fully-qualified
+origin (scheme + host[+port]). The browser refuses the ceremony
+when the origin doesn't match the list; bare hostnames silently
+break every WebAuthn attempt in the field, so we reject them at
+helm install time.
+*/}}
+{{- define "secrets-bridge.validateMFA" -}}
+{{- $mfa := .Values.api.config.mfa -}}
+{{- if $mfa -}}
+{{- $w := $mfa.webauthn -}}
+{{- if and $w.rpId (not $w.rpOrigins) -}}
+{{- fail "secrets-bridge: api.config.mfa.webauthn.rpId is set but api.config.mfa.webauthn.rpOrigins is empty. Both are required to mount the WebAuthn enrollment + assertion routes." -}}
+{{- end -}}
+{{- if and $w.rpOrigins (not $w.rpId) -}}
+{{- fail "secrets-bridge: api.config.mfa.webauthn.rpOrigins is set but api.config.mfa.webauthn.rpId is empty. Both are required to mount the WebAuthn enrollment + assertion routes." -}}
+{{- end -}}
+{{- range $i, $origin := ($w.rpOrigins | default list) -}}
+{{- if not (kindIs "string" $origin) -}}
+{{- fail (printf "secrets-bridge: api.config.mfa.webauthn.rpOrigins[%d] must be a string, got %v" $i $origin) -}}
+{{- end -}}
+{{- if not (or (hasPrefix "https://" $origin) (hasPrefix "http://" $origin)) -}}
+{{- fail (printf "secrets-bridge: api.config.mfa.webauthn.rpOrigins[%d]=%q must be a fully-qualified origin starting with https:// or http:// — bare hostnames break the WebAuthn ceremony silently in browsers." $i $origin) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

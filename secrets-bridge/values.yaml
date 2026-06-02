@@ -224,6 +224,65 @@ api:
       # keys/values.
       groupMap: {}
 
+      # SB_OIDC_TRUSTED_AMR_MFA (Slice H4 api decoupling).
+      # When false (DEFAULT, post-H4 architectural pivot), the
+      # OIDC callback records `amr` in the audit metadata but
+      # does NOT stamp `last_mfa_at` on the session. The app's
+      # own /auth/mfa/{challenge,verify} is the SOLE path that
+      # marks a session MFA-fresh.
+      # When true, the legacy Slice D behaviour is preserved:
+      # the callback stamps `last_mfa_at` when the IdP's `amr`
+      # claim carries an RFC 8176 strong factor. Operators
+      # running an IdP that genuinely enforces MFA (Entra /
+      # Okta with strong policy) flip this back to skip the
+      # app-side step-up modal.
+      # `amr` is recorded in audit either way — forensic
+      # visibility doesn't depend on the trust knob.
+      trustAmrForMFA: false
+
+    # App-level MFA (Slices H1–H5 + I1–I3). The api owns enrollment
+    # + step-up directly:
+    #   /users/me/mfa/*             enrollment + management
+    #   /auth/mfa/{challenge,verify} step-up
+    #
+    # TOTP works with zero config — the issuer renders into the
+    # otpauth:// label that authenticator apps display under the
+    # account name.
+    #
+    # WebAuthn is OFF by default — the relying-party config has no
+    # safe defaults (the browser rejects ceremonies whose RPID
+    # doesn't match the origin's eTLD+1). When both `rpId` and
+    # `rpOrigins` are set the api mounts the WebAuthn routes; when
+    # either is empty those routes return 503 and TOTP remains the
+    # only enrollable factor.
+    mfa:
+      # SB_MFA_TOTP_ISSUER — rendered into the otpauth:// URI's
+      # `issuer=` param + the label prefix. Authenticator apps
+      # display this under the user's account name. Override per
+      # environment so operators running UAT alongside prod don't
+      # see two identically-named entries on their phone
+      # (e.g. "Secrets Bridge (UAT)" / "Secrets Bridge (prod)").
+      totpIssuer: "Secrets Bridge"
+
+      webauthn:
+        # SB_MFA_WEBAUTHN_RP_ID — effective domain (e.g.
+        # `sb.example.com`). MUST be the eTLD+1 of the SPA's
+        # origin or the browser rejects the ceremony. Empty
+        # value disables the WebAuthn routes at the api side.
+        rpId: ""
+        # SB_MFA_WEBAUTHN_RP_DISPLAY_NAME — free text rendered in
+        # the authenticator's enrollment dialog ("Add Secrets
+        # Bridge?"). Falls back to "Secrets Bridge" when empty.
+        rpDisplayName: "Secrets Bridge"
+        # SB_MFA_WEBAUTHN_RP_ORIGINS — list of fully-qualified
+        # origins permitted for the ceremony. Production deploys
+        # typically list one entry (the SPA's https origin);
+        # local dev adds http://localhost:5173 for Vite. The api
+        # rejects WebAuthn responses whose origin isn't in the
+        # list. Empty list disables the WebAuthn routes at the
+        # api side.
+        rpOrigins: []
+
   # Horizontal pod autoscaler. Off by default; flip enabled when the
   # metrics-server / Prometheus adapter is wired.
   autoscaling:
