@@ -110,6 +110,43 @@ spec:
             - name: SB_OIDC_GROUP_MAP
               value: {{ .groupMap | toJson | quote }}
             {{- end }}
+            {{- /*
+              Slice H4 — OIDC `amr`-based MFA stamping. Default
+              false post-H4 (the app's /auth/mfa/verify is the sole
+              path that stamps `last_mfa_at`). Render the env var
+              ONLY when the operator explicitly opted in so a
+              default deployment doesn't carry a knob whose
+              presence implies a different security posture.
+            */}}
+            {{- if .trustAmrForMFA }}
+            - name: SB_OIDC_TRUSTED_AMR_MFA
+              value: "true"
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- /*
+              Slice J — App-level MFA (Slices H1–H5 + I1–I3).
+              TOTP issuer always renders so authenticator apps see a
+              consistent label across re-installs. WebAuthn vars
+              only render when BOTH rpId AND rpOrigins are set —
+              the api refuses to construct the relying party
+              otherwise, so rendering half the config would just
+              produce a boot-time error.
+            */}}
+            {{- with .Values.api.config.mfa }}
+            {{- with .totpIssuer }}
+            - name: SB_MFA_TOTP_ISSUER
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if and .webauthn.rpId .webauthn.rpOrigins }}
+            - name: SB_MFA_WEBAUTHN_RP_ID
+              value: {{ .webauthn.rpId | quote }}
+            {{- with .webauthn.rpDisplayName }}
+            - name: SB_MFA_WEBAUTHN_RP_DISPLAY_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SB_MFA_WEBAUTHN_RP_ORIGINS
+              value: {{ join "," .webauthn.rpOrigins | quote }}
             {{- end }}
             {{- end }}
             - name: SB_KMS_BACKEND
