@@ -134,6 +134,15 @@ spec:
               produce a boot-time error.
             */}}
             {{- with .Values.api.config.mfa }}
+            {{- /*
+              Slice K — login-time MFA gate. Default false renders
+              no env var so existing step-up-only deployments are
+              byte-for-byte unchanged.
+            */}}
+            {{- if .requireMFAAtLogin }}
+            - name: SB_REQUIRE_MFA_AT_LOGIN
+              value: "true"
+            {{- end }}
             {{- with .totpIssuer }}
             - name: SB_MFA_TOTP_ISSUER
               value: {{ . | quote }}
