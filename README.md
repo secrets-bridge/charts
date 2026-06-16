@@ -130,9 +130,10 @@ charts/
 ## Operator references
 
 - **Full operator docs:** [`secrets-bridge/README.md`](./secrets-bridge/README.md) (CP), [`agent/README.md`](./agent/README.md) (agent)
-- **Doc site:** https://secrets-bridge.io
+- **Doc site:** https://secrets-bridge.io — recent additions: [Project environments](https://secrets-bridge.io/operations/project-environments/) + [Policy templates](https://secrets-bridge.io/operations/policy-templates/) (Slice L6)
 - **Platform overview:** https://github.com/secrets-bridge
 - **Release-process runbook:** each chart's `CHANGELOG.md`
+- **Slice log:** [`secrets-bridge/skills/PROGRESS.md`](https://github.com/secrets-bridge/skills/blob/main/PROGRESS.md) — recent chart-relevant values: `api.config.mfa.{requireMFAAtLogin,totpIssuer,webauthn.*}` (Slice J + K), `api.config.oidc.trustAmrForMFA` (Slice J)
 
 ## Compatibility
 
