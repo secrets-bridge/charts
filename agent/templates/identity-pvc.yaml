@@ -1,0 +1,34 @@
+{{- /*
+Writable, restart-persistent identity volume for enrollment (identity.mode=file).
+Rendered ONLY when file mode is active, persistence is enabled, and the operator
+did not bring their own claim. The agent persists its enrolled {agent_id,
+agent_token} here (as a FILE) and reuses it on restart — the one-time enrollment
+token is spent exactly once. A Secret can NOT back this (the agent holds no
+cluster-API RBAC) and emptyDir is intentionally NOT offered (a restart would lose
+the credential). See _validation.tpl.
+*/ -}}
+{{- if and (include "secrets-bridge-agent.fileMode" .) .Values.identity.persistence.enabled (not .Values.identity.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "secrets-bridge-agent.identityClaimName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge-agent.labels" . | nindent 4 }}
+  annotations:
+    # Retain the identity across a `helm uninstall` so a reinstall reuses the
+    # persisted credential instead of spending a second enrollment token.
+    helm.sh/resource-policy: keep
+    {{- with .Values.global.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.identity.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.identity.persistence.size | quote }}
+  {{- if .Values.identity.persistence.storageClass }}
+  storageClassName: {{ .Values.identity.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}

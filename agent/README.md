@@ -50,9 +50,43 @@ helm install agent ./charts/agent \
 | Plain HTTP refused | `cp.endpoint=http://...` fails template-time unless `cp.insecureTransport=true` is set explicitly |
 | `clusterName` required | Fails template-time without it — discovery flow needs a stable cluster identifier |
 | `cp.endpoint` required | Fails template-time without it |
-| `identity.existingSecret` required | Fails template-time without it |
+| Identity configured | Fails template-time unless EITHER `identity.existingSecret` (static, default) OR `enrollment.enabled=true` (file mode) |
+| Agent holds no cluster-API RBAC | The chart renders no Role/RoleBinding. The agent never reads or writes Kubernetes Secrets; enrollment persists a **file** on a PVC, not a Secret |
 
-## Identity Secret keys
+## Identity modes
+
+The agent's credential comes from one of two modes (`identity.mode`), 1:1 with `enrollment.enabled`:
+
+- **`existingSecret` (default — production / the live path).** The operator pre-creates a Secret with `SB_AGENT_ID` + `SB_AGENT_SECRET`; wired via `envFrom`. No writable storage, no cluster-API access, `readOnlyRootFilesystem` stays true. **Unchanged from previous releases.**
+- **`file` (optional — enroll-on-first-boot).** `enrollment.enabled=true`. On first boot the agent exchanges a one-time token for a persistent credential and writes it to `<identity.mountPath>/<identity.fileName>` on a **writable, restart-persistent PVC**; it reuses that credential on restart (the one-time token is spent exactly once). Requires `identity.persistence.enabled=true` (or a BYO `existingClaim`) — `emptyDir` is rejected, and a Kubernetes Secret can't back it (the agent has no Secret-write RBAC).
+
+```yaml
+# Enrollment mode (Option B) — opt-in
+enrollment:
+  enabled: true
+  tokenSecretName: my-enroll-token     # you pre-create this Secret; token is never a chart value
+  tokenSecretKey: enrollment_token
+identity:
+  mode: file
+  existingSecret: ""
+  mountPath: /var/lib/secrets-bridge-agent
+  fileName: identity.json
+  persistence:
+    enabled: true
+    size: 1Gi
+agent:
+  providerType: aws-sm                 # must match the enrollment token's binding
+  region: eu-central-1
+```
+
+The one-time token is read from a Secret you create — never render it into chart values:
+
+```
+kubectl create secret generic my-enroll-token \
+  --from-literal=enrollment_token=<TOKEN-from-the-CP>
+```
+
+## Identity Secret keys (static mode)
 
 The Secret named by `identity.existingSecret` (default `secrets-bridge-agent`) must carry:
 

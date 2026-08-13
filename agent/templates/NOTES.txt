@@ -15,6 +15,24 @@ CP endpoint:  {{ .Values.cp.endpoint }}
 
 {{- end }}
 
+Identity mode:  {{ .Values.identity.mode }}
+{{- if eq .Values.identity.mode "file" }}
+
+  Enroll-on-first-boot is ACTIVE. On its first start the agent exchanges the
+  one-time token (Secret {{ .Values.enrollment.tokenSecretName }}, key
+  {{ .Values.enrollment.tokenSecretKey }}) for a persistent credential and
+  writes it to {{ include "secrets-bridge-agent.identityFilePath" . }} on the
+  {{- if .Values.identity.persistence.existingClaim }} claim {{ .Values.identity.persistence.existingClaim }}{{- else }} PVC {{ include "secrets-bridge-agent.identityClaimName" . }} ({{ .Values.identity.persistence.size }}){{- end }}.
+  A restart REUSES that credential and does NOT re-enroll — the one-time
+  token is spent exactly once. Rotate a spent token by deleting the PVC (or
+  its identity.json) and supplying a fresh token Secret, then rolling the pod.
+{{- else }}
+
+  Static credential mode — the agent reads SB_AGENT_ID + SB_AGENT_SECRET from
+  the pre-created Secret "{{ .Values.identity.existingSecret }}" (envFrom).
+  No writable storage, no cluster-API access; readOnlyRootFilesystem stays true.
+{{- end }}
+
 Once the pod is up, verify on the CP side:
 
   GET {{ .Values.cp.endpoint }}/api/v1/agents

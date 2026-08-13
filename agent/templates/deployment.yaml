@@ -116,14 +116,51 @@ spec:
               value: {{ . | toJson | quote }}
             {{- end }}
             {{- end }}
+            {{- if include "secrets-bridge-agent.fileMode" . }}
+            - name: SB_ENROLLMENT_ENABLED
+              value: {{ .Values.enrollment.enabled | quote }}
+            {{- if .Values.enrollment.enabled }}
+            - name: SB_ENROLLMENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.enrollment.tokenSecretName | quote }}
+                  key: {{ .Values.enrollment.tokenSecretKey | quote }}
+            {{- end }}
+            - name: SB_IDENTITY_FILE
+              value: {{ include "secrets-bridge-agent.identityFilePath" . | quote }}
+            {{- with .Values.agent.name }}
+            - name: SB_AGENT_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.agent.providerType }}
+            - name: SB_PROVIDER_TYPE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.agent.region }}
+            - name: SB_REGION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+          {{- if eq .Values.identity.mode "existingSecret" }}
           envFrom:
             - secretRef:
                 name: {{ .Values.identity.existingSecret }}
-          {{- if .Values.cp.caExistingSecret }}
+          {{- end }}
+          {{- if or .Values.cp.caExistingSecret (include "secrets-bridge-agent.fileMode" .) }}
           volumeMounts:
+            {{- if .Values.cp.caExistingSecret }}
             - name: cp-ca
               mountPath: /etc/secrets-bridge/cp-ca
               readOnly: true
+            {{- end }}
+            {{- if include "secrets-bridge-agent.fileMode" . }}
+            # The ONLY writable mount (readOnlyRootFilesystem stays true). The
+            # agent persists its enrolled credential here and reuses it on
+            # restart. Backed by a PVC — never emptyDir (see identity.persistence).
+            - name: identity
+              mountPath: {{ .Values.identity.mountPath | quote }}
+              readOnly: false
+            {{- end }}
           {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
@@ -131,14 +168,21 @@ spec:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-      {{- if .Values.cp.caExistingSecret }}
+      {{- if or .Values.cp.caExistingSecret (include "secrets-bridge-agent.fileMode" .) }}
       volumes:
+        {{- if .Values.cp.caExistingSecret }}
         - name: cp-ca
           secret:
             secretName: {{ .Values.cp.caExistingSecret }}
             items:
               - key: {{ .Values.cp.caExistingSecretKey }}
                 path: {{ .Values.cp.caExistingSecretKey }}
+        {{- end }}
+        {{- if include "secrets-bridge-agent.fileMode" . }}
+        - name: identity
+          persistentVolumeClaim:
+            claimName: {{ include "secrets-bridge-agent.identityClaimName" . }}
+        {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

@@ -48,6 +48,31 @@ app.kubernetes.io/component: agent
 {{- end -}}
 {{- end -}}
 
+{{/*
+identity.mode == "file" → the agent reads/writes SB_IDENTITY_FILE on a
+writable persistent volume (enrollment). Emits "true" or "". Validation
+keeps this 1:1 with enrollment.enabled.
+*/}}
+{{- define "secrets-bridge-agent.fileMode" -}}
+{{- if eq .Values.identity.mode "file" -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/* PVC name for FILE-mode identity persistence (BYO existingClaim wins). */}}
+{{- define "secrets-bridge-agent.identityClaimName" -}}
+{{- if .Values.identity.persistence.existingClaim -}}
+{{- .Values.identity.persistence.existingClaim -}}
+{{- else -}}
+{{- printf "%s-identity" (include "secrets-bridge-agent.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Absolute path of the persisted identity file (SB_IDENTITY_FILE). */}}
+{{- define "secrets-bridge-agent.identityFilePath" -}}
+{{- printf "%s/%s" (trimSuffix "/" .Values.identity.mountPath) .Values.identity.fileName -}}
+{{- end -}}
+
 {{- define "secrets-bridge-agent.image" -}}
 {{- $registry := default .Values.global.imageRegistry "" -}}
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
