@@ -10,7 +10,9 @@ description: |
     - NO DATABASE_URL / REDIS_URL env vars surfaced (BRD §15, §24).
     - Loopback-only probes (`127.0.0.1:8090`); no Service rendered.
     - Identity material lives in a Kubernetes Secret the operator
-      pre-creates — never in chart values.
+      pre-creates (static mode, default) — never in chart values. An
+      optional enroll-on-first-boot mode persists a credential FILE on a
+      PVC; the agent still holds no cluster-API RBAC.
 type: application
 home: https://secrets-bridge.io
 icon: https://raw.githubusercontent.com/secrets-bridge/.github/main/profile/logo.svg
@@ -21,7 +23,7 @@ maintainers:
     url: https://github.com/secrets-bridge
 
 # Pre-v0.1.0 — the chart and the image both roll on `:dev`.
-version: 0.0.1
+version: 0.0.2
 appVersion: "dev"
 
 kubeVersion: ">=1.27.0-0"
@@ -43,6 +45,15 @@ annotations:
     - name: Agent repository
       url: https://github.com/secrets-bridge/agent
   artifacthub.io/changes: |
+    - kind: added
+      description: |
+        agent: optional enroll-on-first-boot (identity.mode=file). When
+        enrollment.enabled=true the agent exchanges a one-time token
+        (from a pre-created Secret) for a persistent credential and
+        writes it to a writable PVC (identity.persistence), reusing it on
+        restart. Static existingSecret mode remains the default and
+        renders byte-for-byte unchanged. The agent holds no cluster-API
+        RBAC in either mode.
     - kind: fixed
       description: |
         agent: bind 0.0.0.0:probesPort by default + drop host:127.0.0.1

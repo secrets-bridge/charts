@@ -147,7 +147,64 @@ cp:
 # rotate the registered pubkey.
 
 identity:
+  # Identity source: "existingSecret" (default; static / production) or
+  # "file" (enrollment). They map 1:1 to the enrollment switch:
+  #   existingSecret  ⟺  enrollment.enabled=false
+  #   file            ⟺  enrollment.enabled=true
+  mode: existingSecret
+
+  # STATIC mode (mode=existingSecret — the live / production path). The
+  # operator pre-creates a Secret carrying SB_AGENT_ID + SB_AGENT_SECRET
+  # (+ optional keypair); wired via envFrom. NO writable storage, NO cluster
+  # API, readOnlyRootFilesystem stays true. This is the default.
   existingSecret: secrets-bridge-agent
+
+  # FILE mode (mode=file — enrollment). The agent reads/writes its credential
+  # at <mountPath>/<fileName> (SB_IDENTITY_FILE) on a WRITABLE, restart-
+  # persistent volume, and reuses it on restart (the one-time enrollment
+  # token is spent exactly once).
+  mountPath: /var/lib/secrets-bridge-agent
+  fileName: identity.json
+
+  # Persistence for FILE mode. MUST be a PVC (chart-created) or a BYO claim.
+  # A Kubernetes Secret can NOT back this (the agent persists a FILE and must
+  # never hold cluster-API write RBAC — it stays outbound-only, BRD §15/§24),
+  # and an emptyDir is REJECTED (a restart would lose the credential and the
+  # one-time enrollment token cannot be reused).
+  persistence:
+    enabled: false
+    existingClaim: ""              # BYO a claim; else the chart creates a PVC
+    storageClass: ""               # "" = cluster default StorageClass
+    accessModes:
+      - ReadWriteOnce
+    size: 1Gi
+
+# ── Enrollment (agent-1 self-enrollment; charts-1) ───────────────────
+#
+# Enroll-on-first-boot. When enabled AND no credential is stored, the agent
+# exchanges a ONE-TIME token (POST /api/v1/agents/enroll) for a persistent
+# credential, writes it to identity.persistence, and heartbeats. On restart
+# it reuses the persisted credential and does NOT re-enroll (the one-time
+# token is spent exactly once). Requires identity.persistence (a writable,
+# restart-persistent volume) — a read-only Secret mount cannot enroll.
+#
+# The one-time token is read from an EXISTING Secret you create — never set
+# it as a plaintext chart value (it must not render into a manifest):
+#   kubectl create secret generic <name> \
+#     --from-literal=enrollment_token=<TOKEN>
+enrollment:
+  enabled: false
+  tokenSecretName: ""
+  tokenSecretKey: enrollment_token
+
+# Fields reported to the CP at enrollment. clusterName is the top-level
+# .Values.clusterName (identity for discovery, already required). name
+# defaults to the pod hostname when empty. providerType MUST match the
+# enrollment token's binding on the CP.
+agent:
+  name: ""
+  providerType: aws-sm
+  region: ""
 
 # ── Providers ────────────────────────────────────────────────────────
 #
