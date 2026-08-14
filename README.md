@@ -19,14 +19,14 @@ Two Helm charts, deployed to two different cluster boundaries.
 | [**`secrets-bridge/`**](./secrets-bridge/) | **Control-plane cluster** (one per platform install) | `api` + `ui` + `worker` + `controller`, sharing one Ingress |
 | [**`agent/`**](./agent/) | **Every workload cluster** (one per target boundary) | Outbound-only execution agent |
 
-The split is intentional — the agent has a fundamentally different lifecycle (one per workload cluster, outbound-only, no Postgres/Redis), so it ships as its own chart rather than under the umbrella.
+The split is intentional. The agent has a different lifecycle (one per workload cluster, outbound-only, no Postgres/Redis), so it ships as its own chart rather than under the umbrella.
 
 > **Pre-v0.1.0.** Both charts and the images they reference roll on the `:dev` tag. First release will bump to `v0.1.0`. See each chart's `CHANGELOG.md` for the cut-a-release runbook.
 
-## Quick start — control plane
+## Quick start: control plane
 
 ```bash
-# 1. Pre-create the env Secret (operator owns it — ESO, sops,
+# 1. Pre-create the env Secret (operator owns it: ESO, sops,
 #    sealed-secrets, terragrunt-managed; any path works). See
 #    secrets-bridge/README.md for the full key list per backend.
 kubectl create namespace secrets-bridge
@@ -44,7 +44,7 @@ helm install secrets-bridge ./secrets-bridge \
 
 The control plane comes up behind a single Ingress; the SPA at `/`, the api at `/api/v1`, `/healthz`, `/readyz`, `/metrics`. Same-origin, no CORS, one TLS cert.
 
-## Quick start — agent
+## Quick start: agent
 
 ```bash
 # 1. Mint the agent on the CP side.
@@ -83,7 +83,7 @@ Both charts trip render-time errors on misconfigurations that would otherwise pr
 
 ## Pod rollout on Secret rotation
 
-Both charts default `secrets.reloader.enabled=true` (CP umbrella) and `reloader.enabled=true` (agent), stamping `secret.reloader.stakater.com/reload: "<secret-name>"` on every Deployment that envFrom's a Secret. Install [stakater/reloader](https://github.com/stakater/Reloader) once per cluster and ESO-driven Secret refreshes propagate to a pod restart within ~30s.
+Both charts default `secrets.reloader.enabled=true` (CP umbrella) and `reloader.enabled=true` (agent), and stamp `secret.reloader.stakater.com/reload: "<secret-name>"` on every Deployment that envFrom's a Secret. Install [stakater/reloader](https://github.com/stakater/Reloader) once per cluster and ESO-driven Secret refreshes propagate to a pod restart within ~30s.
 
 ## Versioning
 
@@ -107,7 +107,7 @@ charts/
 │       ├── _helpers.tpl
 │       ├── _validation.tpl                   Render-time safety rails
 │       ├── NOTES.txt
-│       ├── ingress.yaml                      SHARED — single Ingress, path priority
+│       ├── ingress.yaml                      SHARED: single Ingress, path priority
 │       ├── api/                              Deployment + Service + SA + PDB + HPA
 │       ├── ui/                               Deployment + Service + SA + PDB
 │       ├── worker/                           Deployment + SA + PDB (loopback probes)
@@ -130,10 +130,10 @@ charts/
 ## Operator references
 
 - **Full operator docs:** [`secrets-bridge/README.md`](./secrets-bridge/README.md) (CP), [`agent/README.md`](./agent/README.md) (agent)
-- **Doc site:** https://secrets-bridge.io — recent additions: [Project environments](https://secrets-bridge.io/operations/project-environments/) + [Policy templates](https://secrets-bridge.io/operations/policy-templates/) (Slice L6)
+- **Doc site:** https://secrets-bridge.io. Recent additions: [Project environments](https://secrets-bridge.io/operations/project-environments/) + [Policy templates](https://secrets-bridge.io/operations/policy-templates/) (Slice L6)
 - **Platform overview:** https://github.com/secrets-bridge
 - **Release-process runbook:** each chart's `CHANGELOG.md`
-- **Slice log:** [`secrets-bridge/skills/PROGRESS.md`](https://github.com/secrets-bridge/skills/blob/main/PROGRESS.md) — recent chart-relevant values: `api.config.mfa.{requireMFAAtLogin,totpIssuer,webauthn.*}` (Slice J + K), `api.config.oidc.trustAmrForMFA` (Slice J)
+- **Slice log:** [`secrets-bridge/skills/PROGRESS.md`](https://github.com/secrets-bridge/skills/blob/main/PROGRESS.md). Recent chart-relevant values: `api.config.mfa.{requireMFAAtLogin,totpIssuer,webauthn.*}` (Slice J + K), `api.config.oidc.trustAmrForMFA` (Slice J)
 
 ## Compatibility
 
