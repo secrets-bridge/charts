@@ -25,8 +25,12 @@ fullnameOverride: ""
 
 image:
   repository: secrets-bridge/agent
-  tag: ""              # defaults to .Chart.AppVersion when empty
-  pullPolicy: IfNotPresent
+  tag: ""              # defaults to .Chart.AppVersion ("dev" pre-v0.1.0) when empty
+  digest: ""            # immutable "sha256:..." pin; overrides tag when set
+  # `Always` while the chart ships a mutable `:dev` tag by default
+  # (pre-v0.1.0): IfNotPresent would happily run a stale image
+  # forever once a node has cached it.
+  pullPolicy: Always
 
 # Stable identifier for this cluster — required for the discovery
 # flow (BRD: one agent ≡ one cluster). Used as the `cluster_name`
@@ -103,8 +107,13 @@ readinessProbe:
 # ── Control plane connection ─────────────────────────────────────────
 
 cp:
-  # SB_CP_ENDPOINT. Must be HTTPS unless `insecureTransport=true`
-  # (which the chart's _validation.tpl refuses in production).
+  # SB_CP_ENDPOINT. Must be HTTPS: `_validation.tpl` fails the
+  # render on a plain `http://` endpoint UNCONDITIONALLY unless
+  # `insecureTransport=true` is set explicitly. CHT-09: this chart
+  # has no separate `env: dev|production` concept the way the
+  # `secrets-bridge` control-plane chart does (see its top-level
+  # `env` value). The guard isn't "refused in production", it's
+  # "refused always, opt out explicitly for local dev only".
   # Example: "https://secrets-bridge.example.com"
   endpoint: ""
 
@@ -265,10 +274,18 @@ reloader:
 
 networkPolicy:
   # Egress-only NetworkPolicy. INGRESS is denied entirely (no inbound
-  # listener). Egress allows: DNS (10/UDP, 53/TCP), CP HTTPS, and the
-  # provider endpoints. Operators tighten further by adding
-  # `egress.allowCIDRs` for specific provider VPC endpoints.
-  enabled: false
+  # listener). Egress allows: DNS (53/UDP+TCP) and HTTPS (443/TCP).
+  #
+  # CHT-06: default ON, and functional out of the box. With
+  # `allowCIDRs` empty (the default) the 443 egress rule is left
+  # broad (any destination) so a fresh install can reach `cp.endpoint`
+  # plus Vault / AWS Secrets Manager without the operator having to
+  # pre-compute CIDRs first. NetworkPolicy has no notion of DNS names,
+  # so pinning this down to just the CP + provider IP ranges is only
+  # possible once you know them; set `allowCIDRs` to replace the
+  # broad rule with a pinned allow-list once you do (recommended for
+  # production).
+  enabled: true
   dnsNamespaceSelector: {}
   allowCIDRs: []
 

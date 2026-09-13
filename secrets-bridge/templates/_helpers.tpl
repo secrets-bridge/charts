@@ -85,17 +85,25 @@ Common annotations — applied wherever `commonAnnotations` is used.
 {{/*
 Image reference — fully qualified.
 
+Prefers an immutable digest pin (`image.digest`, the `sha256:...`
+value from `docker inspect --format '{{"{{"}}index .RepoDigests 0{{"}}"}}'`
+or your registry's UI) over the mutable `image.tag`. When `digest` is
+set, `tag` is ignored entirely: a digest already pins an exact
+manifest, so there's no tag left to resolve. See
+`secrets-bridge.validateImageTags` for the render-time guard against
+shipping a mutable `:dev` / `:latest` tag to `env=production`.
+
 Usage: {{ include "secrets-bridge.image" (dict "ctx" . "image" .Values.api.image) }}
 */}}
 {{- define "secrets-bridge.image" -}}
 {{- $ctx := .ctx -}}
 {{- $image := .image -}}
 {{- $registry := default $ctx.Values.global.imageRegistry "" -}}
-{{- $tag := default $ctx.Chart.AppVersion $image.tag -}}
-{{- if $registry -}}
-{{- printf "%s/%s:%s" $registry $image.repository $tag -}}
+{{- $repo := ternary (printf "%s/%s" $registry $image.repository) $image.repository (ne $registry "") -}}
+{{- if $image.digest -}}
+{{- printf "%s@%s" $repo $image.digest -}}
 {{- else -}}
-{{- printf "%s:%s" $image.repository $tag -}}
+{{- printf "%s:%s" $repo (default $ctx.Chart.AppVersion $image.tag) -}}
 {{- end -}}
 {{- end -}}
 

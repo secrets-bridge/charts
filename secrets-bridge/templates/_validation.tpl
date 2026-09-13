@@ -38,6 +38,30 @@ in production-mode deployments.
 {{- end -}}
 
 {{/*
+Image tag guard (CHT-03 / M11). With no `image.tag` override, every
+component resolves to `.Chart.AppVersion`. Pre-v0.1.0 that's the
+literal string "dev", i.e. whatever `main` last pushed. Combined with
+`pullPolicy: IfNotPresent` that used to mean a `production` install
+could silently run a stale, untagged build forever. Fails render
+instead of letting that reach a cluster. `image.digest` (an exact
+manifest pin) always bypasses this check: there's no mutability left
+to guard against once a digest is set.
+*/}}
+{{- define "secrets-bridge.validateImageTags" -}}
+{{- if eq (lower .Values.env) "production" -}}
+{{- $components := dict "api" .Values.api "ui" .Values.ui "worker" .Values.worker "controller" .Values.controller -}}
+{{- range $name, $spec := $components -}}
+{{- if and $spec.enabled (not $spec.image.digest) -}}
+{{- $tag := lower (default $.Chart.AppVersion $spec.image.tag) -}}
+{{- if or (eq $tag "dev") (eq $tag "latest") -}}
+{{- fail (printf "secrets-bridge: %s.image resolves to the mutable tag %q under env=production. Cut a real release and set %s.image.tag to a pinned version, or (preferred) set %s.image.digest to a repo@sha256:... digest." $name $tag $name $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 OIDC validation (Slice F). Mirrors the api binary's boot-time
 checks so misconfiguration surfaces at `helm install` rather than
 CrashLoopBackOff. The api refuses to start when SB_OIDC_ISSUER is

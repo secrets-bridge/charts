@@ -6,13 +6,17 @@ metadata:
   labels:
     {{- include "secrets-bridge.componentLabels" (dict "ctx" . "component" "controller") | nindent 4 }}
 rules:
-  # SecretsSync references can name a Kubernetes Secret as their
-  # `source` (e.g. when the agent has pre-populated the cluster).
-  # The controller only reads them — it never holds or relays the
-  # values.
-  - apiGroups: [""]
-    resources: [secrets]
-    verbs: [get, list, watch]
+  # No core/v1 Secret RBAC is declared here on purpose (security
+  # assessment CTL-01 / H5, charts#21 CHT-04): the reconciler only
+  # validates that Spec.Source and Spec.Destination resolve via the
+  # Providers registry: it never Gets, Lists, or Watches a
+  # corev1.Secret, and CredentialsSecretRef is not dereferenced
+  # anywhere in the controller. Mirrors the kubebuilder RBAC marker
+  # in secretssync_controller.go. If a future change wires
+  # CredentialsSecretRef up, add a narrowly-scoped Role (not a
+  # ClusterRole) for just the namespaces that need it, and add the
+  # rule back here in lockstep with the controller-repo marker.
+  #
   # SecretsSync (cluster-scoped) full lifecycle.
   - apiGroups: [sync.secrets-bridge.io]
     resources: [secretssyncs]

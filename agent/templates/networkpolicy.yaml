@@ -26,15 +26,26 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-    {{- with .Values.networkPolicy.allowCIDRs }}
+    {{- if .Values.networkPolicy.allowCIDRs }}
     # Operator-supplied CIDRs — typically the CP ingress IP and any
-    # provider VPC endpoints (Vault, AWS Secrets Manager).
+    # provider VPC endpoints (Vault, AWS Secrets Manager). Replaces
+    # the broad default below with a pinned allow-list.
     - to:
-        {{- range . }}
+        {{- range .Values.networkPolicy.allowCIDRs }}
         - ipBlock:
             cidr: {{ . }}
         {{- end }}
       ports:
+        - port: 443
+          protocol: TCP
+    {{- else }}
+    # No allowCIDRs supplied (the default): allow HTTPS egress
+    # broadly so `cp.endpoint` and any configured provider are
+    # reachable out of the box. NetworkPolicy can't match on a
+    # hostname, so pinning this requires operator-supplied CIDRs (see
+    # `networkPolicy.allowCIDRs` in values.yaml); set them for a
+    # tighter production posture.
+    - ports:
         - port: 443
           protocol: TCP
     {{- end }}

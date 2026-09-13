@@ -73,12 +73,18 @@ true
 {{- printf "%s/%s" (trimSuffix "/" .Values.identity.mountPath) .Values.identity.fileName -}}
 {{- end -}}
 
+{{/*
+Image reference, fully qualified. Prefers an immutable digest pin
+(`image.digest`, a `sha256:...` value) over the mutable `image.tag`;
+when `digest` is set, `tag` is ignored entirely. Mirrors
+`secrets-bridge.image` in the control-plane chart.
+*/}}
 {{- define "secrets-bridge-agent.image" -}}
 {{- $registry := default .Values.global.imageRegistry "" -}}
-{{- $tag := default .Chart.AppVersion .Values.image.tag -}}
-{{- if $registry -}}
-{{- printf "%s/%s:%s" $registry .Values.image.repository $tag -}}
+{{- $repo := ternary (printf "%s/%s" $registry .Values.image.repository) .Values.image.repository (ne $registry "") -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" $repo .Values.image.digest -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- printf "%s:%s" $repo (default .Chart.AppVersion .Values.image.tag) -}}
 {{- end -}}
 {{- end -}}

@@ -105,8 +105,15 @@ api:
   enabled: true
   image:
     repository: secrets-bridge/api
-    tag: ""              # defaults to .Chart.AppVersion when empty
-    pullPolicy: IfNotPresent
+    tag: ""              # defaults to .Chart.AppVersion ("dev" pre-v0.1.0) when empty
+    # Immutable digest pin, e.g. "sha256:abc123...". Overrides `tag`
+    # entirely when set. Prefer this for any production install.
+    digest: ""
+    # `Always` while the chart ships a mutable `:dev` tag by default
+    # (pre-v0.1.0): IfNotPresent would happily run a stale image
+    # forever once a node has cached it. Safe to leave on Always even
+    # after pinning `digest`; a digest pull is a cache hit either way.
+    pullPolicy: Always
   replicaCount: 2
   port: 8080
 
@@ -116,7 +123,14 @@ api:
     create: true
     name: ""
     annotations: {}
-    automountServiceAccountToken: true
+    # The api never calls the Kubernetes API: it's a Fiber HTTP
+    # service over Postgres/Redis/KMS. Default false (CHT-07); flip
+    # true only if you wire something (e.g. a future in-cluster
+    # discovery client) that genuinely needs the SA token. IRSA
+    # (annotations above) does NOT need this: the EKS Pod Identity
+    # webhook injects its own projected web-identity token
+    # independently of this flag.
+    automountServiceAccountToken: false
 
   resources:
     requests:
@@ -313,8 +327,40 @@ api:
     enabled: true
     minAvailable: 1
 
+  # CHT-01 / M9: default-deny NetworkPolicy. Only the ingress
+  # controller may reach :8080; egress is DNS-only until you add
+  # `extraRules` for Postgres / Redis / KMS / the OIDC issuer,
+  # destinations the chart can't know in advance. Requires a
+  # NetworkPolicy-enforcing CNI (Calico, Cilium, the AWS VPC CNI
+  # network-policy add-on, ...); a non-enforcing CNI silently
+  # ignores this object.
   networkPolicy:
-    enabled: false
+    enabled: true
+    ingress:
+      # Namespace the ingress controller's pods run in. The shared
+      # Ingress (templates/ingress.yaml) is meant to be the only path
+      # to this Service; override to match your ingress controller
+      # (ingress-nginx, aws-load-balancer-controller webhook ns, ...).
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+      podSelector: {}
+    egress:
+      # {} (default) resolves to kube-system. Override for a
+      # non-standard CoreDNS/kube-dns namespace.
+      dnsNamespaceSelector: {}
+      # One NetworkPolicyEgressRule per destination the api actually
+      # needs to reach, e.g.:
+      #   extraRules:
+      #     - to: [{ ipBlock: { cidr: 10.0.10.0/24 } }]   # Postgres + Redis subnet
+      #       ports: [{ protocol: TCP, port: 5432 }, { protocol: TCP, port: 6379 }]
+      #     - to: [{ ipBlock: { cidr: 10.0.20.10/32 } }]  # Vault (kms.backend=vault-transit)
+      #       ports: [{ protocol: TCP, port: 8200 }]
+      # aws-kms / an external OIDC issuer typically ride the same
+      # broad-443 pattern the agent chart uses (see its
+      # networkPolicy.allowCIDRs doc) if you'd rather not enumerate
+      # AWS's / your IdP's IP ranges.
+      extraRules: []
 
   podAnnotations: {}
   podLabels: {}
@@ -328,8 +374,9 @@ ui:
   enabled: true
   image:
     repository: secrets-bridge/ui
-    tag: ""              # defaults to .Chart.AppVersion when empty
-    pullPolicy: IfNotPresent
+    tag: ""              # defaults to .Chart.AppVersion ("dev" pre-v0.1.0) when empty
+    digest: ""            # immutable "sha256:..." pin; overrides tag when set
+    pullPolicy: Always
   replicaCount: 2
   port: 8080            # nginx in the official image listens on 8080
 
@@ -355,7 +402,11 @@ ui:
 
   containerSecurityContext:
     allowPrivilegeEscalation: false
-    readOnlyRootFilesystem: false
+    # CHT-08: the nginx image is built to run read-only (cache/pid
+    # paths point under /tmp; see the `tmp` emptyDir mounted in
+    # templates/ui/deployment.yaml). Flip back to false only if you
+    # swap in an image that writes elsewhere on its root filesystem.
+    readOnlyRootFilesystem: true
     capabilities:
       drop: [ALL]
 
@@ -383,6 +434,21 @@ ui:
     enabled: true
     minAvailable: 1
 
+  # CHT-01 / M9: same default-deny posture as the api. The ui is a
+  # static SPA bundle served by nginx, so it makes no backend calls of
+  # its own; egress stays DNS-only with no `extraRules` needed by
+  # default.
+  networkPolicy:
+    enabled: true
+    ingress:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+      podSelector: {}
+    egress:
+      dnsNamespaceSelector: {}
+      extraRules: []
+
   podAnnotations: {}
   podLabels: {}
   nodeSelector: {}
@@ -394,11 +460,27 @@ ui:
 # One Ingress object fronts BOTH ui and api on the SAME host. Path
 # routing:
 #   /api/v1/*           → api Service
-#   /healthz, /readyz   → api Service (probe pass-through)
-#   /metrics            → api Service (Prometheus scrape, but you
-#                                       probably want NetworkPolicy
-#                                       blocking external access)
 #   / (catch-all)       → ui Service
+#
+# CHT-02 / M10: `/metrics`, `/readyz`, and `/healthz` are deliberately
+# NOT in the public default: they used to route straight to the
+# internet. `/metrics` carries no secret values but is still internal
+# operational detail; scrape it in-cluster instead of publicly:
+#
+#   apiVersion: monitoring.coreos.com/v1
+#   kind: ServiceMonitor
+#   spec:
+#     selector:
+#       matchLabels: {app.kubernetes.io/component: api}
+#     endpoints:
+#       - port: http
+#         path: /metrics
+#
+# (targets the api's ClusterIP Service, which api/networkpolicy.yaml
+# still permits from the same namespace / your monitoring stack.)
+# `/healthz` stays available to add back via `apiPaths` below if your
+# ingress controller / external LB wants an HTTP-level health check
+# path instead of relying on the pod's own liveness probe.
 #
 # Same-origin posture means the SPA calls `/api/v1/*` relative to its
 # own host — no CORS, no separate domain, one TLS cert.
@@ -409,12 +491,9 @@ ingress:
   host: secrets-bridge.example.com
   annotations: {}
   # Path prefixes routed to the api. Adjust if your reverse proxy
-  # rewrites paths.
+  # rewrites paths, or add back "/healthz" for an ingress-level probe.
   apiPaths:
     - /api
-    - /healthz
-    - /readyz
-    - /metrics
   # All non-api traffic falls through to the ui.
   uiPath: /
   tls:
@@ -434,8 +513,9 @@ worker:
   enabled: true
   image:
     repository: secrets-bridge/worker
-    tag: ""              # defaults to .Chart.AppVersion when empty
-    pullPolicy: IfNotPresent
+    tag: ""              # defaults to .Chart.AppVersion ("dev" pre-v0.1.0) when empty
+    digest: ""            # immutable "sha256:..." pin; overrides tag when set
+    pullPolicy: Always
   # The worker uses a per-sweeper Redis lock for leader election;
   # replicas > 1 is supported (N-1 will silently skip ticks).
   replicaCount: 1
@@ -444,7 +524,10 @@ worker:
     create: true
     name: ""
     annotations: {}
-    automountServiceAccountToken: true
+    # The worker never calls the Kubernetes API. Default false
+    # (CHT-07); flip true only if you wire something that genuinely
+    # needs the SA token.
+    automountServiceAccountToken: false
 
   resources:
     requests:
@@ -526,11 +609,22 @@ worker:
     # gitopsHttpTimeout: 15s
     # gitopsBatchSize: 20
 
-  # Notifications. Set `webhookUrl` to the channel that should
-  # receive sweeper failures; flip slackFormat to true for the
+  # Notifications. A sweeper-failure webhook URL is sensitive enough
+  # (routes to a Slack channel / PagerDuty integration) that it must
+  # NEVER be a plaintext chart value (CHT-05 / M12): Helm would
+  # render it straight into the rendered manifest and into
+  # `helm get values` / `helm diff` output. Reference a key in an
+  # existing Secret instead; flip slackFormat to true for the
   # `{"text": "..."}` envelope that Slack inbound webhooks expect.
   notifications:
-    webhookUrl: ""
+    webhookUrlSecretRef:
+      # name: "" defaults to `secrets.existingSecret` (the same bag
+      # already envFrom'd into this pod). Add SB_WORKER_WEBHOOK_URL
+      # to that bag and set only `key` below. Set `name` explicitly
+      # to reference a different pre-created Secret instead.
+      name: ""
+      # Empty = no webhook configured (sweeper failures only log).
+      key: ""
     slackFormat: false
 
   # SB_DISCOVER_TARGETS_JSON — list of (cluster, provider, scope)
@@ -543,6 +637,18 @@ worker:
   podDisruptionBudget:
     enabled: false
     minAvailable: 1
+
+  # CHT-01 / M9: no Service fronts the worker, so ingress is denied
+  # entirely (kubelet reaches the probe port via the pod IP directly,
+  # outside pod-to-pod NetworkPolicy enforcement on most CNIs; see
+  # `bindAddress` above). Egress needs the same Postgres/Redis/KMS
+  # destinations as the api, plus wherever `notifications.webhookUrlSecretRef`
+  # points.
+  networkPolicy:
+    enabled: true
+    egress:
+      dnsNamespaceSelector: {}
+      extraRules: []
 
   podAnnotations: {}
   podLabels: {}
@@ -570,14 +676,20 @@ controller:
 
   image:
     repository: secrets-bridge/controller
-    tag: ""              # defaults to .Chart.AppVersion when empty
-    pullPolicy: IfNotPresent
+    tag: ""              # defaults to .Chart.AppVersion ("dev" pre-v0.1.0) when empty
+    digest: ""            # immutable "sha256:..." pin; overrides tag when set
+    pullPolicy: Always
   replicaCount: 1
 
   serviceAccount:
     create: true
     name: ""
     annotations: {}
+    # Stays true (unlike api/worker; see CHT-07): controller-runtime
+    # authenticates to the cluster's Kubernetes API server using this
+    # SA's projected token (in-cluster REST config); it's not an
+    # unused default here, it's the credential the manager reconciles
+    # SecretsSync + leader-election configmaps/leases with.
     automountServiceAccountToken: true
 
   resources:
@@ -635,6 +747,30 @@ controller:
   podDisruptionBudget:
     enabled: false
     minAvailable: 1
+
+  # CHT-01 / M9. Ingress is denied entirely unless `metricsService.enabled`
+  # (the manager's health-probe port 8081 has no Service and isn't
+  # meant to be reachable outside the pod's own netns / kubelet).
+  # Egress always needs the cluster's Kubernetes API server, whose
+  # address (in-cluster Service IP, node port, or a cloud LB) varies
+  # per cluster and can't be pinned with a generic selector; see
+  # `egress.allowAPIServer` below.
+  networkPolicy:
+    enabled: true
+    ingress:
+      # Only rendered when controller.metricsService.enabled=true.
+      # {} (default) matches every namespace; tighten to your
+      # Prometheus / monitoring namespace for a stricter posture.
+      metricsNamespaceSelector: {}
+      metricsPodSelector: {}
+    egress:
+      dnsNamespaceSelector: {}
+      # Broad TCP/443 egress so controller-runtime can reach the API
+      # server without a cluster-specific CIDR. Set false only if
+      # your platform lets you scope this tighter (e.g. a known
+      # control-plane CIDR) via `extraRules` instead.
+      allowAPIServer: true
+      extraRules: []
 
   podAnnotations: {}
   podLabels: {}

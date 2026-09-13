@@ -1,0 +1,33 @@
+{{- if and .Values.worker.enabled .Values.worker.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secrets-bridge.componentName" (dict "ctx" . "component" "worker") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge.componentLabels" (dict "ctx" . "component" "worker") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "secrets-bridge.componentSelectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  # No Service fronts the worker (see values.yaml `worker.bindAddress`
+  # for the probe-reachability nuance) — deny ALL ingress.
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml (default (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")) .Values.worker.networkPolicy.egress.dnsNamespaceSelector) | nindent 12 }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Postgres / Redis / KMS / the notification webhook target — see
+    # `worker.networkPolicy.egress.extraRules` in values.yaml.
+    {{- with .Values.worker.networkPolicy.egress.extraRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end -}}

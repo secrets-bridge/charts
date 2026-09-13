@@ -152,18 +152,20 @@ providers:
 
 ## NetworkPolicy
 
-Opt-in via `networkPolicy.enabled=true`. Renders:
+Default **on** (`networkPolicy.enabled=true`, CHT-06). Renders:
 - `ingress: []` (hard denial of all inbound)
 - DNS egress to `kube-system` pods (or a custom selector)
-- Operator-supplied CIDRs egress on TCP/443 (provide CP ingress IP + provider VPC endpoints)
+- TCP/443 egress, broad (any destination) when `allowCIDRs` is empty so a fresh install can reach `cp.endpoint` and its provider(s) out of the box, pinned to `allowCIDRs` once you set it
 
 ```yaml
 networkPolicy:
-  enabled: true
-  allowCIDRs:
+  enabled: true            # default
+  allowCIDRs:               # optional: tighten from the broad default
     - 10.42.0.10/32        # CP ingress (ALB / NLB)
     - 10.42.0.20/32        # Vault internal endpoint
 ```
+
+Set `allowCIDRs` for a production install. NetworkPolicy can't match on `cp.endpoint`'s hostname, so the broad default trades a known-shaped attack surface (any HTTPS destination) for zero required operator input; pinning it down needs the CP's and your providers' actual IP ranges.
 
 ## Configuration reference
 
@@ -179,7 +181,8 @@ networkPolicy:
 | `providers.vault.enabled` | | Wire Vault env |
 | `providers.awsSecretsManager.enabled` | | Wire AWS env (IRSA-preferred) |
 | `reloader.enabled` | | (default true) restart pod on identity-Secret rotation |
-| `networkPolicy.enabled` | | (default false) egress-only NetworkPolicy |
+| `networkPolicy.enabled` | | (default true) egress-only NetworkPolicy |
+| `image.digest` | | Immutable `sha256:...` pin; overrides `image.tag` when set |
 
 ## License
 
