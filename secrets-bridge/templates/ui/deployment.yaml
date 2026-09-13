@@ -42,12 +42,24 @@ spec:
             - name: http
               containerPort: {{ .Values.ui.port }}
               protocol: TCP
+          {{- if .Values.ui.containerSecurityContext.readOnlyRootFilesystem }}
+          volumeMounts:
+            # CHT-08: readOnlyRootFilesystem=true needs somewhere
+            # writable for nginx's cache/pid/client-body temp paths.
+            - name: tmp
+              mountPath: /tmp
+          {{- end }}
           livenessProbe:
             {{- toYaml .Values.ui.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.ui.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.ui.resources | nindent 12 }}
+      {{- if .Values.ui.containerSecurityContext.readOnlyRootFilesystem }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- end }}
       {{- with .Values.ui.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

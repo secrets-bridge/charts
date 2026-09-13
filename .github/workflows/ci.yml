@@ -83,6 +83,10 @@ jobs:
             out/secrets-bridge-dev.yaml
 
       - name: Render + validate secrets-bridge (production aws-kms preset)
+        # env=production requires every enabled component to resolve to a
+        # pinned image (CHT-03 / M11; see secrets-bridge.validateImageTags).
+        # api exercises the digest path, the rest exercise a pinned tag, so
+        # both mechanisms get covered by this one preset.
         run: |
           helm template ci-prod secrets-bridge/ \
             --namespace secrets-bridge \
@@ -96,6 +100,10 @@ jobs:
             --set controller.config.leaderElect=true \
             --set controller.metricsService.enabled=true \
             --set controller.config.metricsAddr=":8080" \
+            --set api.image.digest=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
+            --set ui.image.tag=0.1.0 \
+            --set worker.image.tag=0.1.0 \
+            --set controller.image.tag=0.1.0 \
             > out/secrets-bridge-prod.yaml
           kubeconform -strict -summary -skip CustomResourceDefinition \
             -ignore-missing-schemas \
@@ -110,6 +118,10 @@ jobs:
             --set kms.vaultTransit.addr=https://vault.example.com \
             --set kms.vaultTransit.key=sb-wrap \
             --set ingress.host=sb.example.com \
+            --set api.image.tag=0.1.0 \
+            --set ui.image.tag=0.1.0 \
+            --set worker.image.tag=0.1.0 \
+            --set controller.image.tag=0.1.0 \
             > out/secrets-bridge-vault.yaml
           kubeconform -strict -summary -skip CustomResourceDefinition \
             -ignore-missing-schemas \
@@ -197,6 +209,32 @@ jobs:
             exit 1
           fi
           echo "OK: unknown backend rejected"
+
+      - name: production + mutable dev image tag must be rejected
+        run: |
+          if helm template r secrets-bridge/ \
+              --set env=production --set kms.backend=aws-kms \
+              --set kms.awsKms.region=us-east-1 --set kms.awsKms.keyId=alias/sb-wrap \
+              --set ingress.host=x.example.com \
+              > /dev/null 2>&1; then
+            echo "::error::env=production rendered with the unpinned default (:dev) api image, safety rail BROKEN"
+            exit 1
+          fi
+          echo "OK: production + unpinned :dev tag rejected"
+
+      - name: production + pinned image.digest must be accepted
+        run: |
+          if ! helm template r secrets-bridge/ \
+              --set env=production --set kms.backend=aws-kms \
+              --set kms.awsKms.region=us-east-1 --set kms.awsKms.keyId=alias/sb-wrap \
+              --set ingress.host=x.example.com \
+              --set api.image.digest=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
+              --set ui.image.tag=0.1.0 --set worker.image.tag=0.1.0 --set controller.image.tag=0.1.0 \
+              > /dev/null 2>&1; then
+            echo "::error::env=production with every component pinned (digest or tag) still failed to render"
+            exit 1
+          fi
+          echo "OK: production + pinned images renders"
 
       - name: agent missing clusterName must be rejected
         run: |

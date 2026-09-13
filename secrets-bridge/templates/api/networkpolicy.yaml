@@ -1,0 +1,44 @@
+{{- if and .Values.api.enabled .Values.api.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secrets-bridge.componentName" (dict "ctx" . "component" "api") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "secrets-bridge.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only the ingress controller's pods may reach :8080 — the shared
+    # Ingress (templates/ingress.yaml) is the only intended path in.
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.api.networkPolicy.ingress.namespaceSelector | nindent 12 }}
+          {{- with .Values.api.networkPolicy.ingress.podSelector }}
+          podSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      ports:
+        - port: {{ .Values.api.port }}
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml (default (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")) .Values.api.networkPolicy.egress.dnsNamespaceSelector) | nindent 12 }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Postgres / Redis / KMS / OIDC / any other operator-specific
+    # destination — see `api.networkPolicy.egress.extraRules` in
+    # values.yaml for examples.
+    {{- with .Values.api.networkPolicy.egress.extraRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end -}}

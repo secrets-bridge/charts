@@ -1,0 +1,56 @@
+{{- if and .Values.controller.enabled .Values.controller.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secrets-bridge.componentName" (dict "ctx" . "component" "controller") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge.componentLabels" (dict "ctx" . "component" "controller") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "secrets-bridge.componentSelectorLabels" (dict "ctx" . "component" "controller") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  {{- if .Values.controller.metricsService.enabled }}
+  ingress:
+    # Prometheus / any in-cluster scraper reaching the opt-in metrics
+    # port. The health-probe port (8081) has no Service and isn't
+    # meant to be reachable outside the pod's own netns / kubelet, so
+    # it's intentionally not allowed here.
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.controller.networkPolicy.ingress.metricsNamespaceSelector | nindent 12 }}
+          {{- with .Values.controller.networkPolicy.ingress.metricsPodSelector }}
+          podSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      ports:
+        - port: {{ .Values.controller.metricsService.port }}
+          protocol: TCP
+  {{- else }}
+  ingress: []
+  {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml (default (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")) .Values.controller.networkPolicy.egress.dnsNamespaceSelector) | nindent 12 }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- if .Values.controller.networkPolicy.egress.allowAPIServer }}
+    # controller-runtime needs to reach the cluster's Kubernetes API
+    # server for every Get/List/Watch/Update — its address (in-cluster
+    # Service IP, node port, or a cloud LB) varies per cluster and
+    # can't be pinned with a generic selector here.
+    - ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.controller.networkPolicy.egress.extraRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end -}}

@@ -1,0 +1,43 @@
+{{- if and .Values.ui.enabled .Values.ui.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secrets-bridge.componentName" (dict "ctx" . "component" "ui") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge.componentLabels" (dict "ctx" . "component" "ui") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "secrets-bridge.componentSelectorLabels" (dict "ctx" . "component" "ui") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only the ingress controller's pods may reach :8080 — the shared
+    # Ingress (templates/ingress.yaml) is the only intended path in.
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.ui.networkPolicy.ingress.namespaceSelector | nindent 12 }}
+          {{- with .Values.ui.networkPolicy.ingress.podSelector }}
+          podSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      ports:
+        - port: {{ .Values.ui.port }}
+          protocol: TCP
+  egress:
+    # The ui is a static SPA bundle served by nginx — it makes no
+    # backend calls of its own, so DNS is the only default egress.
+    - to:
+        - namespaceSelector:
+            {{- toYaml (default (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")) .Values.ui.networkPolicy.egress.dnsNamespaceSelector) | nindent 12 }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- with .Values.ui.networkPolicy.egress.extraRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end -}}

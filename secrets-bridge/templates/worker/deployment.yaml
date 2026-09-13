@@ -109,9 +109,14 @@ spec:
             - name: SB_WORKER_GITOPS_BATCH_SIZE
               value: {{ . | quote }}
             {{- end }}
-            {{- with .Values.worker.notifications.webhookUrl }}
+            {{- with .Values.worker.notifications.webhookUrlSecretRef }}
+            {{- if .key }}
             - name: SB_WORKER_WEBHOOK_URL
-              value: {{ . | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default $.Values.secrets.existingSecret .name | quote }}
+                  key: {{ .key | quote }}
+            {{- end }}
             {{- end }}
             - name: SB_WORKER_WEBHOOK_SLACK_FORMAT
               value: {{ .Values.worker.notifications.slackFormat | quote }}

@@ -31,11 +31,11 @@ helm install secrets-bridge ./charts/secrets-bridge \
 |---|---|---|
 | `api` | Deployment + Service + ServiceAccount + PDB + HPA (opt) | Fiber/Go control-plane API |
 | `ui` | Deployment + Service + ServiceAccount + PDB | React SPA served by nginx |
-| `ingress` | Single Ingress with path routing | Same host → ui at `/`, api at `/api/v1`, `/healthz`, `/readyz`, `/metrics` |
-| `worker` | _follow-up PR_ | Sweepers + GitOps poller |
-| `controller` | _follow-up PR_ | Kubernetes CRD reconciler |
+| `ingress` | Single Ingress with path routing | Same host → ui at `/`, api at `/api/v1` |
+| `worker` | Deployment + ServiceAccount + PDB (opt) + NetworkPolicy (opt) | Sweepers + GitOps poller |
+| `controller` | Deployment + CRD + RBAC + NetworkPolicy (opt) | Kubernetes CRD reconciler |
 
-The shared ingress is the key piece — the SPA's `/api/v1/*` calls go to the same host as the SPA itself, no CORS, one TLS cert. Path priority is rendered with `/api`, `/healthz`, `/readyz`, `/metrics` first so they win over the `/` ui catch-all.
+The shared ingress is the key piece: the SPA's `/api/v1/*` calls go to the same host as the SPA itself, no CORS, one TLS cert. `/healthz`, `/readyz`, and `/metrics` are deliberately **not** on the public ingress by default (see "Metrics & health checks" below); `apiPaths` defaults to just `/api`.
 
 ## Required secrets
 
@@ -55,6 +55,9 @@ The chart consumes a pre-existing Kubernetes Secret named by `secrets.existingSe
 | `SB_KMS_VAULT_KEY` | — | ✓ | — | — |
 | `SB_KMS_AWS_REGION` | — | — | ✓ | — |
 | `SB_KMS_AWS_KEY_ID` | — | — | ✓ | — |
+| `SB_WORKER_WEBHOOK_URL` | _(optional)_ | optional | optional | optional |
+
+`SB_WORKER_WEBHOOK_URL` (sweeper-failure notifications) is deliberately **not** a chart value (CHT-05 / M12). Add the key to this same Secret and point `worker.notifications.webhookUrlSecretRef.key` at it; the chart wires a `secretKeyRef`, never a plaintext env value.
 
 For `aws-kms`, the api **also** needs IRSA — annotate the api ServiceAccount with the IAM role ARN that holds `kms:Encrypt` / `kms:Decrypt` / `kms:GenerateDataKey` on the configured CMK. See `api.serviceAccount.annotations`.
 
@@ -101,6 +104,23 @@ api:
 | `kms.backend` not in `{local, vault-transit, aws-kms}` | Errors out at template time. |
 | `vault-transit` selected without `kms.vaultTransit.key` AND no `secrets.existingSecret` | Errors out. |
 | `aws-kms` selected without `kms.awsKms.region` / `keyId` AND no `secrets.existingSecret` | Errors out. |
+| `env=production` AND an enabled component resolves to a mutable `:dev` / `:latest` tag with no `image.digest` set | Errors out (CHT-03 / M11); see "Image pinning" below. |
+
+## Image pinning
+
+Pre-v0.1.0, every component's `image.tag` defaults to `.Chart.AppVersion`, which is the literal string `"dev"`: whatever `main` last pushed. `pullPolicy` defaults to `Always` so a mutable tag at least never runs stale once a node has it cached, but under `env=production` the chart goes further and **refuses to render** unless you either:
+
+- set `<component>.image.tag` to a pinned release version, or
+- (preferred) set `<component>.image.digest` to an exact `sha256:...` manifest pin, which bypasses the tag entirely and is immune to the tag being repointed later.
+
+```yaml
+api:
+  image:
+    digest: "sha256:<64-hex-digest>"   # preferred: exact, immutable
+# or
+  image:
+    tag: "0.1.0"                       # once a real release exists
+```
 
 ## Pod rollout on Secret rotation
 
@@ -112,10 +132,7 @@ When `secrets.reloader.enabled=true` (default), the chart annotates the api Depl
             ┌─────────────────────────────────────────┐
             │ https://secrets-bridge.example.com      │
             │                                         │
-            │  /api/v1/*  ──┐                         │
-            │  /healthz   ──┼──→  api Service :8080   │
-            │  /readyz    ──┘                         │
-            │  /metrics   ──┘                         │
+            │  /api/v1/*  ──────→  api Service :8080  │
             │                                         │
             │  / (everything else) ──→  ui Service    │
             └─────────────────────────────────────────┘
@@ -129,9 +146,27 @@ To shift the api root path (e.g. proxy already prepends `/sb/api/v1`), override 
 ingress:
   apiPaths:
     - /sb/api
-    - /sb/healthz
-    - /sb/readyz
 ```
+
+## Metrics & health checks
+
+`/healthz`, `/readyz`, and `/metrics` are intentionally kept off the public ingress (`ingress.apiPaths` defaults to `[/api]` only; see CHT-02 / charts#21). Reach them from inside the cluster instead:
+
+- **Metrics**: point a Prometheus `ServiceMonitor` at the api's ClusterIP Service (`app.kubernetes.io/component: api`), port `http`, path `/metrics`. The default `api.networkPolicy` (see below) only opens `:8080` to the ingress controller's namespace, so add an `extraRules` entry (or a namespace label your Prometheus operator already matches) if your scrape source lives elsewhere.
+- **Health checks**: the Deployment's own `livenessProbe` / `readinessProbe` already hit `/healthz` and `/readyz` from the kubelet, no ingress path needed. If your ingress controller or an external load balancer wants an HTTP-level health check path instead, add `/healthz` back to `ingress.apiPaths`.
+
+## NetworkPolicy
+
+`api`, `ui`, `worker`, and `controller` each render a default-deny `NetworkPolicy` (`<component>.networkPolicy.enabled`, default `true` on all four; CHT-01 / charts#21). Requires a NetworkPolicy-enforcing CNI (Calico, Cilium, the AWS VPC CNI network-policy add-on, ...); a non-enforcing CNI silently ignores the object.
+
+| Component | Ingress | Egress |
+|---|---|---|
+| `api` | `:8080` from `api.networkPolicy.ingress.namespaceSelector` (default `ingress-nginx`) | DNS + `api.networkPolicy.egress.extraRules` (Postgres, Redis, KMS, OIDC: operator-specific, empty by default) |
+| `ui` | `:8080` from `ui.networkPolicy.ingress.namespaceSelector` | DNS only (static SPA, no backend calls) |
+| `worker` | none (no Service fronts it) | DNS + `worker.networkPolicy.egress.extraRules` |
+| `controller` | none, unless `controller.metricsService.enabled` | DNS + broad `443` for the Kubernetes API server (`egress.allowAPIServer`, no portable way to pin its address) |
+
+See each block's comments in `values.yaml` for worked `extraRules` examples (a Postgres+Redis subnet, a Vault endpoint, ...).
 
 ## Configuration reference
 
@@ -150,22 +185,24 @@ ingress:
 | `ingress.enabled` | `true` | |
 | `ingress.host` | `secrets-bridge.example.com` | |
 | `ingress.tls.clusterIssuer` | `""` | When set, adds `cert-manager.io/cluster-issuer` annotation. |
-| `worker.enabled` | `false` | Lands in a follow-up PR. |
-| `controller.enabled` | `false` | Lands in a follow-up PR. |
+| `worker.enabled` | `true` | |
+| `controller.enabled` | `true` | |
+| `api.networkPolicy.enabled` / `ui.…` / `worker.…` / `controller.…` | `true` | Default-deny NetworkPolicy per component. |
+| `api.image.digest` / `ui.…` / `worker.…` / `controller.…` | `""` | Immutable `sha256:...` pin; overrides `image.tag` when set. |
 
 ## Roadmap
 
 | Item | Status |
 |---|---|
-| api Deployment + Service + SA + PDB + HPA | ✓ this PR |
-| ui Deployment + Service + SA + PDB | ✓ this PR |
-| Shared Ingress with path routing | ✓ this PR |
-| KMS safety rails | ✓ this PR |
-| Reloader integration | ✓ this PR |
-| worker Deployment + ScaledObject | follow-up |
-| controller Deployment + CRDs + RBAC | follow-up |
-| NetworkPolicy templates | follow-up |
-| ServiceMonitor (Prometheus) | follow-up |
+| api Deployment + Service + SA + PDB + HPA | ✓ |
+| ui Deployment + Service + SA + PDB | ✓ |
+| worker Deployment + SA + PDB | ✓ |
+| controller Deployment + CRDs + RBAC | ✓ |
+| Shared Ingress with path routing | ✓ |
+| KMS safety rails + image-tag safety rail | ✓ |
+| Reloader integration | ✓ |
+| NetworkPolicy templates (api / ui / worker / controller) | ✓ |
+| ServiceMonitor (Prometheus) | operator-provided; see "Metrics & health checks" |
 | `charts/agent/` (workload-cluster install) | separate chart |
 
 ## License
