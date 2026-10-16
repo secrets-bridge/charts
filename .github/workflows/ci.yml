@@ -46,8 +46,10 @@ jobs:
       matrix:
         chart: [secrets-bridge, agent]
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: ${{ env.HELM_VERSION }}
       - name: helm lint ${{ matrix.chart }}
@@ -57,9 +59,11 @@ jobs:
     name: helm template + kubeconform
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: ${{ env.HELM_VERSION }}
 
@@ -159,7 +163,7 @@ jobs:
 
       - name: Upload rendered manifests
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rendered-manifests
           path: out/
@@ -169,9 +173,11 @@ jobs:
     name: safety rails trip
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: ${{ env.HELM_VERSION }}
 
@@ -261,9 +267,11 @@ jobs:
     name: release-name truncation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: ${{ env.HELM_VERSION }}
 
