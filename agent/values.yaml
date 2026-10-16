@@ -268,9 +268,15 @@ providers:
     addr: ""
     # SB_VAULT_NAMESPACE — Vault Enterprise only
     namespace: ""
-    # SB_VAULT_KV_MOUNT (defaults to "secret" in the binary)
+    # SB_VAULT_KV_MOUNT. Empty means the binary default "kv". Set it to
+    # the provider connection's scope.mount. The agent refuses a job that
+    # names another mount (discovery and cross-team jobs always name the
+    # connection's), and a job that names none runs against this mount,
+    # so a mismatch fails discovery and sends reads/patches to the wrong
+    # mount.
     kvMount: ""
-    # SB_VAULT_KV_PREFIX — restrict reads/writes to a subtree
+    # SB_VAULT_KV_PREFIX — restrict reads/writes to a subtree. Must
+    # equal the connection's kvPrefix when that sets one.
     kvPrefix: ""
     # SB_VAULT_KUBERNETES_ROLE for k8s-auth (preferred over token)
     kubernetesRole: ""

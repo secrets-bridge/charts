@@ -154,6 +154,13 @@ providers:
     kubernetesRole: secrets-bridge-agent
 ```
 
+`kvMount` and `kvPrefix` have to match the provider connection's `mount`
+and `kvPrefix`. The agent pins them: a job that names a different mount or
+prefix is refused (discovery and cross-team jobs always name the
+connection's), and a job that names none runs against the agent's own
+mount, so a mismatch can send a read or patch to the wrong mount. Leaving
+`kvMount` empty means `kv`, not `secret`.
+
 ### AWS Secrets Manager (IRSA-preferred)
 
 ```yaml
