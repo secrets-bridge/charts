@@ -154,6 +154,11 @@ providers:
     kubernetesRole: secrets-bridge-agent
 ```
 
+`kvMount` and `kvPrefix` have to match the provider connection's `mount`
+and `kvPrefix`. The agent pins them and refuses any job that names a
+different mount or prefix. Leaving `kvMount` empty means `kv`, not
+`secret`.
+
 ### AWS Secrets Manager (IRSA-preferred)
 
 ```yaml
