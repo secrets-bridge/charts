@@ -29,6 +29,10 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "secrets-bridge-agent.serviceAccountName" . }}
+      # Pod-level too (CHT-N-06) so serviceAccount.create=false (the
+      # namespace's `default` SA) doesn't hand the agent a token it only
+      # needs for Vault Kubernetes auth.
+      automountServiceAccountToken: {{ include "secrets-bridge-agent.automountServiceAccountToken" . }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}

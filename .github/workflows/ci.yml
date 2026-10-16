@@ -24,12 +24,14 @@ on:
       - 'secrets-bridge/**'
       - 'agent/**'
       - '.github/workflows/ci.yml'
+      - '.github/scripts/**'
   pull_request:
     branches: [main]
     paths:
       - 'secrets-bridge/**'
       - 'agent/**'
       - '.github/workflows/ci.yml'
+      - '.github/scripts/**'
 
 permissions:
   contents: read
@@ -128,11 +130,14 @@ jobs:
             out/secrets-bridge-vault.yaml
 
       - name: Render + validate agent (full preset with NetworkPolicy)
+        # The agent only renders a pinned image (CHT-N-01). This preset
+        # exercises the digest path, the private-CA one a release tag.
         run: |
           helm template ci-agent agent/ \
             --namespace secrets-bridge \
             --set clusterName=ci-cluster \
             --set cp.endpoint=https://sb.example.com \
+            --set image.digest=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
             --set providers.vault.enabled=true \
             --set providers.vault.addr=http://vault.svc:8200 \
             --set providers.vault.kubernetesRole=ci-agent \
@@ -152,6 +157,7 @@ jobs:
             --set cp.endpoint=https://sb.internal \
             --set cp.caExistingSecret=cp-ca \
             --set cp.tlsServerName=sb.internal \
+            --set image.tag=0.1.0 \
             > out/agent-ca.yaml
           kubeconform -strict -summary -skip CustomResourceDefinition \
             -ignore-missing-schemas \
@@ -168,6 +174,19 @@ jobs:
   safety-rails:
     name: safety rails trip
     runs-on: ubuntu-latest
+    env:
+      # Shared flags so each case differs from a valid render by exactly
+      # the input under test. PROD is a valid production KMS config;
+      # PINNED pins every control-plane image; AGENT is a valid agent.
+      PROD: >-
+        --set env=production --set kms.backend=aws-kms
+        --set kms.awsKms.region=us-east-1 --set kms.awsKms.keyId=alias/sb-wrap
+        --set ingress.host=x.example.com
+      PINNED: >-
+        --set api.image.tag=0.1.0 --set ui.image.tag=0.1.0
+        --set worker.image.tag=0.1.0 --set controller.image.tag=0.1.0
+      AGENT: --set clusterName=ci --set cp.endpoint=https://x.example.com
+      DIGEST: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
     steps:
       - uses: actions/checkout@v4
 
@@ -175,87 +194,127 @@ jobs:
         with:
           version: ${{ env.HELM_VERSION }}
 
-      # Each case must FAIL — we invert the exit code so the job
-      # only succeeds when the safety rail does.
+      # `reject` cases must fail to render AND fail with the named error,
+      # so a case can't pass because a different guard tripped first.
+      # `accept` cases must render.
       - name: production + LocalKMS must be rejected
         run: |
-          if helm template r secrets-bridge/ \
-              --set env=production --set kms.backend=local \
-              --set ingress.host=x.example.com \
-              > /dev/null 2>&1; then
-            echo "::error::production + kms.backend=local rendered successfully — safety rail BROKEN"
-            exit 1
-          fi
-          echo "OK: production + local rejected"
+          .github/scripts/expect-render.sh reject 'kms.backend="local" is not permitted' secrets-bridge/ \
+            --set env=production --set kms.backend=local --set ingress.host=x.example.com $PINNED
 
       - name: unknown env value must be rejected
         run: |
-          if helm template r secrets-bridge/ \
-              --set env=staging --set kms.backend=aws-kms \
-              --set ingress.host=x.example.com \
-              > /dev/null 2>&1; then
-            echo "::error::env=staging rendered — safety rail BROKEN"
-            exit 1
-          fi
-          echo "OK: unknown env rejected"
+          .github/scripts/expect-render.sh reject 'env="staging" is not recognised' secrets-bridge/ \
+            --set env=staging --set kms.backend=aws-kms --set ingress.host=x.example.com
 
       - name: unknown kms.backend must be rejected
         run: |
-          if helm template r secrets-bridge/ \
-              --set env=production --set kms.backend=azure-key-vault \
-              --set ingress.host=x.example.com \
-              > /dev/null 2>&1; then
-            echo "::error::kms.backend=azure-key-vault rendered — safety rail BROKEN"
-            exit 1
-          fi
-          echo "OK: unknown backend rejected"
+          .github/scripts/expect-render.sh reject 'kms.backend="azure-key-vault" is not recognised' secrets-bridge/ \
+            --set env=production --set kms.backend=azure-key-vault --set ingress.host=x.example.com $PINNED
 
-      - name: production + mutable dev image tag must be rejected
+      # CHT-N-05: the binaries compare SB_ENV / SB_KMS_BACKEND exactly.
+      - name: env with the wrong case (Production) must be rejected
         run: |
-          if helm template r secrets-bridge/ \
-              --set env=production --set kms.backend=aws-kms \
-              --set kms.awsKms.region=us-east-1 --set kms.awsKms.keyId=alias/sb-wrap \
-              --set ingress.host=x.example.com \
-              > /dev/null 2>&1; then
-            echo "::error::env=production rendered with the unpinned default (:dev) api image, safety rail BROKEN"
-            exit 1
-          fi
-          echo "OK: production + unpinned :dev tag rejected"
+          .github/scripts/expect-render.sh reject 'env="Production" is not recognised' secrets-bridge/ \
+            $PROD $PINNED --set env=Production
 
-      - name: production + pinned image.digest must be accepted
+      - name: kms.backend with the wrong case (AWS-KMS) must be rejected
         run: |
-          if ! helm template r secrets-bridge/ \
-              --set env=production --set kms.backend=aws-kms \
-              --set kms.awsKms.region=us-east-1 --set kms.awsKms.keyId=alias/sb-wrap \
-              --set ingress.host=x.example.com \
-              --set api.image.digest=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
-              --set ui.image.tag=0.1.0 --set worker.image.tag=0.1.0 --set controller.image.tag=0.1.0 \
-              > /dev/null 2>&1; then
-            echo "::error::env=production with every component pinned (digest or tag) still failed to render"
-            exit 1
-          fi
-          echo "OK: production + pinned images renders"
+          .github/scripts/expect-render.sh reject 'kms.backend="AWS-KMS" is not recognised' secrets-bridge/ \
+            $PROD $PINNED --set kms.backend=AWS-KMS
+
+      - name: dev + kms.backend with the wrong case (Local) must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'kms.backend="Local" is not recognised' secrets-bridge/ \
+            --set env=dev --set kms.backend=Local --set ingress.host=x.example.com
+
+      # CHT-03 / CHT-N-02: production renders pinned images only.
+      - name: production + unpinned default (:dev) image must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'api.image resolves to tag "dev", which is not a pinned image' secrets-bridge/ \
+            $PROD
+
+      - name: production + floating tag main must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'api.image resolves to tag "main", which is not a pinned image' secrets-bridge/ \
+            $PROD $PINNED --set api.image.tag=main
+
+      - name: production + floating tag latest must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'worker.image resolves to tag "latest", which is not a pinned image' secrets-bridge/ \
+            $PROD $PINNED --set worker.image.tag=latest
+
+      - name: production + floating X.Y tag must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'ui.image resolves to tag "1.2", which is not a pinned image' secrets-bridge/ \
+            $PROD $PINNED --set-string ui.image.tag=1.2
+
+      - name: production + floating X tag must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'controller.image resolves to tag "1", which is not a pinned image' secrets-bridge/ \
+            $PROD $PINNED --set controller.image.tag=1
+
+      - name: repo@sha256 digest must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'api.image.digest="ghcr.io/secrets-bridge/api@sha256:' secrets-bridge/ \
+            $PROD $PINNED --set api.image.digest=ghcr.io/secrets-bridge/api@$DIGEST
+
+      - name: production + pinned images (digest, X.Y.Z, vX.Y.Z-rc, sha-<hex>) must be accepted
+        run: |
+          .github/scripts/expect-render.sh accept secrets-bridge/ $PROD \
+            --set api.image.digest=$DIGEST --set ui.image.tag=0.1.0 \
+            --set worker.image.tag=v1.2.3-rc.1 --set controller.image.tag=sha-0123abc
+
+      - name: dev + default (:dev) image must still be accepted
+        run: |
+          .github/scripts/expect-render.sh accept secrets-bridge/ \
+            --set env=dev --set kms.backend=local --set ingress.host=x.example.com
 
       - name: agent missing clusterName must be rejected
         run: |
-          if helm template a agent/ \
-              --set cp.endpoint=https://x.example.com \
-              > /dev/null 2>&1; then
-            echo "::error::agent without clusterName rendered — safety rail BROKEN"
-            exit 1
-          fi
-          echo "OK: agent missing clusterName rejected"
+          .github/scripts/expect-render.sh reject 'clusterName is required' agent/ \
+            --set cp.endpoint=https://x.example.com --set image.tag=0.1.0
 
       - name: agent plain HTTP without insecureTransport must be rejected
         run: |
-          if helm template a agent/ \
-              --set clusterName=ci \
-              --set cp.endpoint=http://insecure.example.com \
-              > /dev/null 2>&1; then
-            echo "::error::agent with http:// + no insecure flag rendered — safety rail BROKEN"
-            exit 1
-          fi
-          echo "OK: agent plain http rejected"
+          .github/scripts/expect-render.sh reject 'is plain HTTP' agent/ \
+            --set clusterName=ci --set cp.endpoint=http://insecure.example.com --set image.tag=0.1.0
+
+      # CHT-N-01: the agent has no env value, so pinning always applies
+      # unless the dev-only image.allowMutableTag escape hatch is set.
+      - name: agent default (:dev) image must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'image resolves to tag "dev", which is not a pinned image' agent/ \
+            $AGENT
+
+      - name: agent floating tag main must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'image resolves to tag "main", which is not a pinned image' agent/ \
+            $AGENT --set image.tag=main
+
+      - name: agent repo@sha256 digest must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'image.digest="ghcr.io/secrets-bridge/agent@sha256:' agent/ \
+            $AGENT --set image.digest=ghcr.io/secrets-bridge/agent@$DIGEST
+
+      - name: agent pinned images (digest, X.Y.Z, sha-<hex>) must be accepted
+        run: |
+          .github/scripts/expect-render.sh accept agent/ $AGENT --set image.digest=$DIGEST
+          .github/scripts/expect-render.sh accept agent/ $AGENT --set image.tag=0.1.0
+          .github/scripts/expect-render.sh accept agent/ $AGENT --set image.tag=sha-0123abc
+
+      - name: agent :dev with image.allowMutableTag=true must be accepted
+        run: |
+          .github/scripts/expect-render.sh accept agent/ $AGENT --set image.allowMutableTag=true
+
+      # CHT-N-06: Vault Kubernetes auth reads the projected SA token.
+      - name: agent Vault Kubernetes auth with the SA token off must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'serviceAccount.automountServiceAccountToken=false' agent/ \
+            $AGENT --set image.tag=0.1.0 \
+            --set providers.vault.enabled=true --set providers.vault.addr=https://vault.example.com \
+            --set providers.vault.kubernetesRole=sb-agent \
+            --set serviceAccount.automountServiceAccountToken=false
 
   release-name:
     name: release-name truncation

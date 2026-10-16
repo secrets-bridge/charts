@@ -9,17 +9,30 @@ in production-mode deployments.
 */}}
 
 {{- define "secrets-bridge.validateKMS" -}}
-{{- if and (eq (lower .Values.env) "production") (eq (lower .Values.kms.backend) "local") -}}
+{{- /*
+  Exact, case-sensitive matches (CHT-N-05). The api and worker compare
+  SB_ENV and SB_KMS_BACKEND byte for byte, so `Production` or `AWS-KMS`
+  used to render fine here and then crash-loop at boot.
+*/ -}}
+{{- if not (has .Values.env (list "dev" "production")) -}}
+{{- fail (printf "secrets-bridge: env=%q is not recognised (allowed: dev, production; values are case-sensitive)" .Values.env) -}}
+{{- end -}}
+
+{{- if not (has .Values.kms.backend (list "local" "vault-transit" "aws-kms")) -}}
+{{- fail (printf "secrets-bridge: kms.backend=%q is not recognised (allowed: local, vault-transit, aws-kms; values are case-sensitive)" .Values.kms.backend) -}}
+{{- end -}}
+
+{{- if and (eq .Values.env "production") (eq .Values.kms.backend "local") -}}
 {{- fail (printf "secrets-bridge: kms.backend=%q is not permitted when env=%q. Set kms.backend to one of: vault-transit, aws-kms. (See charts#2 / api#29.)" .Values.kms.backend .Values.env) -}}
 {{- end -}}
 
-{{- if eq (lower .Values.kms.backend) "vault-transit" -}}
+{{- if eq .Values.kms.backend "vault-transit" -}}
 {{- if and (not .Values.kms.vaultTransit.key) (not .Values.secrets.existingSecret) -}}
 {{- fail "secrets-bridge: kms.backend=vault-transit requires either kms.vaultTransit.key (set explicitly) OR secrets.existingSecret (pre-baked SB_KMS_VAULT_KEY)." -}}
 {{- end -}}
 {{- end -}}
 
-{{- if eq (lower .Values.kms.backend) "aws-kms" -}}
+{{- if eq .Values.kms.backend "aws-kms" -}}
 {{- if and (not .Values.kms.awsKms.region) (not .Values.secrets.existingSecret) -}}
 {{- fail "secrets-bridge: kms.backend=aws-kms requires either kms.awsKms.region (set explicitly) OR secrets.existingSecret (pre-baked SB_KMS_AWS_REGION)." -}}
 {{- end -}}
@@ -27,38 +40,52 @@ in production-mode deployments.
 {{- fail "secrets-bridge: kms.backend=aws-kms requires either kms.awsKms.keyId (set explicitly) OR secrets.existingSecret (pre-baked SB_KMS_AWS_KEY_ID)." -}}
 {{- end -}}
 {{- end -}}
-
-{{- if not (has (lower .Values.env) (list "dev" "production")) -}}
-{{- fail (printf "secrets-bridge: env=%q is not recognised (allowed: dev, production)" .Values.env) -}}
 {{- end -}}
 
-{{- if not (has (lower .Values.kms.backend) (list "local" "vault-transit" "aws-kms")) -}}
-{{- fail (printf "secrets-bridge: kms.backend=%q is not recognised (allowed: local, vault-transit, aws-kms)" .Values.kms.backend) -}}
+{{/*
+Image pin guard (CHT-03 / M11, tightened by CHT-N-02). With no
+`image.tag` override, every component resolves to `.Chart.AppVersion`.
+Pre-v0.1.0 that's the literal string "dev", i.e. whatever `main` last
+pushed. The app repos also publish `main`, `X.Y` and `X` tags that move
+on every push or release, so under env=production a tag is accepted
+only when it is on an allow-list of pinned shapes (see
+`secrets-bridge.pinnedTagRegex`). `image.digest` (an exact manifest pin)
+bypasses the tag check; it must be a bare `sha256:<64 hex>` value in
+every env, because the chart renders it as `<repo>@<digest>`.
+*/}}
+{{- define "secrets-bridge.validateImageTags" -}}
+{{- $components := dict "api" .Values.api "ui" .Values.ui "worker" .Values.worker "controller" .Values.controller -}}
+{{- range $name, $spec := $components -}}
+{{- if $spec.enabled -}}
+{{- $digest := toString (default "" $spec.image.digest) -}}
+{{- if $digest -}}
+{{- if not (regexMatch (include "secrets-bridge.digestRegex" $) $digest) -}}
+{{- fail (printf "secrets-bridge: %s.image.digest=%q is not a digest. Set it to the bare sha256:<64 hex> value (no repository, no @); the chart renders <repository>@<digest> itself." $name $digest) -}}
+{{- end -}}
+{{- else if eq $.Values.env "production" -}}
+{{- $tag := toString (default $.Chart.AppVersion $spec.image.tag) -}}
+{{- if not (regexMatch (include "secrets-bridge.pinnedTagRegex" $) $tag) -}}
+{{- fail (printf "secrets-bridge: %s.image resolves to tag %q, which is not a pinned image under env=production. Set %s.image.digest to a bare sha256:<64 hex> digest (preferred), or %s.image.tag to a full release version (X.Y.Z or vX.Y.Z, optional -prerelease) or an immutable sha-<hex> build tag. Moving tags such as dev, latest, main, X.Y and X are refused." $name $tag $name $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 
 {{/*
-Image tag guard (CHT-03 / M11). With no `image.tag` override, every
-component resolves to `.Chart.AppVersion`. Pre-v0.1.0 that's the
-literal string "dev", i.e. whatever `main` last pushed. Combined with
-`pullPolicy: IfNotPresent` that used to mean a `production` install
-could silently run a stale, untagged build forever. Fails render
-instead of letting that reach a cluster. `image.digest` (an exact
-manifest pin) always bypasses this check: there's no mutability left
-to guard against once a digest is set.
+Allow-lists shared by the image pin guard. Kept in sync with
+`secrets-bridge-agent.pinnedTagRegex` / `.digestRegex` in the agent chart.
+
+Tags: a full semver release (`1.2.3`, `v1.2.3`, `1.2.3-rc.1`) or the
+`sha-<short or full commit>` tag every app repo's docker-publish
+workflow pushes. Digests: `sha256:` plus 64 lowercase hex characters.
 */}}
-{{- define "secrets-bridge.validateImageTags" -}}
-{{- if eq (lower .Values.env) "production" -}}
-{{- $components := dict "api" .Values.api "ui" .Values.ui "worker" .Values.worker "controller" .Values.controller -}}
-{{- range $name, $spec := $components -}}
-{{- if and $spec.enabled (not $spec.image.digest) -}}
-{{- $tag := lower (default $.Chart.AppVersion $spec.image.tag) -}}
-{{- if or (eq $tag "dev") (eq $tag "latest") -}}
-{{- fail (printf "secrets-bridge: %s.image resolves to the mutable tag %q under env=production. Cut a real release and set %s.image.tag to a pinned version, or (preferred) set %s.image.digest to a repo@sha256:... digest." $name $tag $name $name) -}}
+{{- define "secrets-bridge.pinnedTagRegex" -}}
+^(v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?|sha-[0-9a-f]{7,64})$
 {{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
+
+{{- define "secrets-bridge.digestRegex" -}}
+^sha256:[0-9a-f]{64}$
 {{- end -}}
 
 {{/*

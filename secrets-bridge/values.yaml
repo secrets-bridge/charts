@@ -6,17 +6,21 @@
 #      below pin `vault-transit` so a forgotten override doesn't
 #      silently boot LocalKMS (the api refuses to boot when
 #      `kms.backend=local` AND `env != "dev"`).
-#   3. Point the api at Postgres + Redis via `api.config.databaseUrl`
-#      / `redisUrl` OR reference an existing Secret via
-#      `secrets.existingSecret`.
-#   4. Pre-create the env Secret with everything the api needs:
-#      `SB_JWT_SECRET`, `SB_WRAP_MASTER_KEY` (dev only), DB / Redis
-#      DSNs, and the KMS-specific knobs. See README "Required
-#      secrets" for the exact key list per backend.
+#   3. Pre-create the env Secret named by `secrets.existingSecret`
+#      with everything the api and worker need: `DATABASE_URL` and
+#      `REDIS_URL` (the chart has no values for these; they only come
+#      from that Secret), `SB_JWT_SECRET`, `SB_WRAP_MASTER_KEY` (dev
+#      only), and the KMS-specific knobs. See the chart README
+#      "Required secrets" for the exact key list per backend.
+#   4. Under `env: production`, pin every enabled component's image:
+#      `<component>.image.digest` (preferred) or a release / sha-<hex>
+#      `<component>.image.tag`. See `api.image` below.
 
 # ── Global ───────────────────────────────────────────────────────────
 
-# Deployment mode. Recognised values:
+# Deployment mode. Recognised values (exact, lowercase: the api and
+# worker compare SB_ENV case-sensitively, so the chart refuses
+# `Production` and the like at render time):
 #   "production" — LocalKMS REJECTED at boot; dev seeder skipped.
 #                  This is the default.
 #   "dev"        — LocalKMS allowed; the api seeds three users on
@@ -74,11 +78,12 @@ secrets:
 # ── KMS ──────────────────────────────────────────────────────────────
 
 kms:
-  # SB_KMS_BACKEND. One of: vault-transit, aws-kms, local.
+  # SB_KMS_BACKEND. One of: vault-transit, aws-kms, local (exact,
+  # lowercase; matched case-sensitively like the binaries do).
   # The `local` backend will REFUSE to boot unless `env=dev`. The
   # chart additionally refuses to render a manifest with the local
   # backend AND env=production via a templated check (see
-  # _kms-validation.tpl).
+  # templates/_validation.tpl).
   backend: vault-transit
 
   vaultTransit:
@@ -105,9 +110,16 @@ api:
   enabled: true
   image:
     repository: secrets-bridge/api
-    tag: ""              # defaults to .Chart.AppVersion ("dev" pre-v0.1.0) when empty
-    # Immutable digest pin, e.g. "sha256:abc123...". Overrides `tag`
-    # entirely when set. Prefer this for any production install.
+    # Defaults to .Chart.AppVersion ("dev" pre-v0.1.0) when empty.
+    # Under env=production (CHT-N-02) only pinned tags render: a full
+    # release version (X.Y.Z / vX.Y.Z, optional -prerelease) or a
+    # sha-<hex> build tag. Moving tags (dev, latest, main, X.Y, X) fail
+    # the render. Same rule for ui, worker and controller.
+    tag: ""
+    # Immutable digest pin: the bare "sha256:<64 hex>" value, no
+    # repository and no "@" (the chart renders <repository>@<digest>).
+    # Overrides `tag` entirely when set. Prefer this for any
+    # production install.
     digest: ""
     # `Always` while the chart ships a mutable `:dev` tag by default
     # (pre-v0.1.0): IfNotPresent would happily run a stale image
@@ -129,7 +141,9 @@ api:
     # discovery client) that genuinely needs the SA token. IRSA
     # (annotations above) does NOT need this: the EKS Pod Identity
     # webhook injects its own projected web-identity token
-    # independently of this flag.
+    # independently of this flag. Rendered on the pod spec as well as
+    # the ServiceAccount (CHT-N-06), so it also holds with
+    # create=false, when the pod runs as an SA this chart doesn't own.
     automountServiceAccountToken: false
 
   resources:
@@ -476,8 +490,13 @@ ui:
 #       - port: http
 #         path: /metrics
 #
-# (targets the api's ClusterIP Service, which api/networkpolicy.yaml
-# still permits from the same namespace / your monitoring stack.)
+# (targets the api's ClusterIP Service). With api.networkPolicy enabled
+# (the default), :8080 only admits pods from
+# api.networkPolicy.ingress.namespaceSelector (the ingress controller),
+# not the release namespace or your monitoring stack, so the scrape is
+# dropped until you allow it. NetworkPolicies are additive: add your own
+# policy that selects the api pods and admits your Prometheus namespace
+# on TCP 8080.
 # `/healthz` stays available to add back via `apiPaths` below if your
 # ingress controller / external LB wants an HTTP-level health check
 # path instead of relying on the pod's own liveness probe.
@@ -507,7 +526,9 @@ ingress:
 #
 # Background sweepers + the GitOps observation poller. The worker
 # shares the api's env Secret (DATABASE_URL, REDIS_URL, KMS knobs)
-# but never exposes a service — its probes listen on loopback only.
+# but never exposes a Service. Its probe listener binds
+# `bindAddress` (0.0.0.0 by default, see below) so the kubelet can
+# reach it on the pod IP.
 
 worker:
   enabled: true
@@ -526,7 +547,7 @@ worker:
     annotations: {}
     # The worker never calls the Kubernetes API. Default false
     # (CHT-07); flip true only if you wire something that genuinely
-    # needs the SA token.
+    # needs the SA token. Rendered on the pod spec too (CHT-N-06).
     automountServiceAccountToken: false
 
   resources:
@@ -688,8 +709,9 @@ controller:
     # Stays true (unlike api/worker; see CHT-07): controller-runtime
     # authenticates to the cluster's Kubernetes API server using this
     # SA's projected token (in-cluster REST config); it's not an
-    # unused default here, it's the credential the manager reconciles
-    # SecretsSync + leader-election configmaps/leases with.
+    # unused default here, it's the credential the manager reads
+    # SecretsSync objects, writes their status and holds the
+    # leader-election Lease with.
     automountServiceAccountToken: true
 
   resources:

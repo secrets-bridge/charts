@@ -30,6 +30,8 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "secrets-bridge.componentServiceAccountName" (dict "ctx" . "component" "worker" "spec" .Values.worker.serviceAccount) }}
+      # Set on the pod too (CHT-N-06), see api/deployment.yaml.
+      automountServiceAccountToken: {{ .Values.worker.serviceAccount.automountServiceAccountToken | default false }}
       {{- with .Values.worker.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -61,7 +63,7 @@ spec:
               value: {{ .Values.worker.config.gitopsEnabled | quote }}
             - name: SB_KMS_BACKEND
               value: {{ .Values.kms.backend | quote }}
-            {{- if eq (lower .Values.kms.backend) "vault-transit" }}
+            {{- if eq .Values.kms.backend "vault-transit" }}
             {{- with .Values.kms.vaultTransit.addr }}
             - name: SB_KMS_VAULT_ADDR
               value: {{ . | quote }}
@@ -75,7 +77,7 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- end }}
-            {{- if eq (lower .Values.kms.backend) "aws-kms" }}
+            {{- if eq .Values.kms.backend "aws-kms" }}
             {{- with .Values.kms.awsKms.region }}
             - name: SB_KMS_AWS_REGION
               value: {{ . | quote }}

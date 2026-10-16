@@ -1,16 +1,26 @@
 # Secrets Bridge — agent chart.
 #
 # Operator orientation:
-#   1. Mint the agent on the CP side first:
-#        POST {CP}/api/v1/agents → { id, agent_secret }
-#   2. Create the identity Secret in the workload cluster:
-#        kubectl create secret generic secrets-bridge-agent \
-#          --from-literal=SB_AGENT_ID=<id> \
-#          --from-literal=SB_AGENT_SECRET=<secret>
-#   3. Set agent.cp.endpoint to the CP's HTTPS URL and
-#      agent.clusterName to a stable identifier for this cluster
-#      (used by the discovery flow to disambiguate refs per cluster).
-#   4. Configure the provider section the agent will fetch from
+#   1. On the CP, an admin (agent.mint) creates a one-time enrollment
+#      token for the provider connection this agent will serve:
+#        POST {CP}/api/v1/provider-connections/<id>/agent-enrollment-token
+#          → { enrollment_token, expires_at, ... }
+#      (Direct mint, POST /api/v1/agents, returns 403 unless the CP runs
+#      with SB_ALLOW_DIRECT_AGENT_MINT=true, a break-glass switch.)
+#   2. Put the token in a Secret in the workload cluster:
+#        kubectl create secret generic secrets-bridge-agent-enroll \
+#          --from-literal=enrollment_token=<token>
+#   3. Install with enrollment.enabled=true, identity.mode=file and
+#      identity.persistence.enabled=true. On first boot the agent trades
+#      the token at POST /api/v1/agents/enroll for its credential and
+#      keeps it on the PVC. See "Enrollment" below.
+#   4. Set cp.endpoint to the CP's HTTPS URL and clusterName to a stable
+#      identifier for this cluster (used by the discovery flow to
+#      disambiguate refs per cluster).
+#   5. Pin the image: image.digest (preferred) or a release / sha-<hex>
+#      image.tag. The chart refuses to render a moving tag unless
+#      image.allowMutableTag=true (local dev only).
+#   6. Configure the provider section the agent will fetch from
 #      (Vault, AWS Secrets Manager, ...). IRSA is the recommended
 #      AWS path; no static AWS creds in chart values.
 
@@ -25,8 +35,19 @@ fullnameOverride: ""
 
 image:
   repository: secrets-bridge/agent
-  tag: ""              # defaults to .Chart.AppVersion ("dev" pre-v0.1.0) when empty
-  digest: ""            # immutable "sha256:..." pin; overrides tag when set
+  # Defaults to .Chart.AppVersion ("dev" pre-v0.1.0) when empty. CHT-N-01:
+  # the chart only renders a pinned image: a full release version
+  # (X.Y.Z / vX.Y.Z, optional -prerelease) or a sha-<hex> build tag.
+  # Moving tags (dev, latest, main, X.Y, X) fail the render unless
+  # allowMutableTag is true.
+  tag: ""
+  # Bare "sha256:<64 hex>" manifest pin (no repository, no @). Overrides
+  # tag when set. Preferred for any real install.
+  digest: ""
+  # Dev-only escape hatch: render a moving tag (the default :dev, main,
+  # ...) anyway. Leave false outside local dev; a moving tag means the
+  # code the agent runs can change on the next pod restart.
+  allowMutableTag: false
   # `Always` while the chart ships a mutable `:dev` tag by default
   # (pre-v0.1.0): IfNotPresent would happily run a stale image
   # forever once a node has cached it.
@@ -45,7 +66,18 @@ serviceAccount:
   # Set the IRSA role ARN here when the agent fetches from AWS
   # Secrets Manager via instance role / EKS pod identity.
   annotations: {}
-  automountServiceAccountToken: true
+  # CHT-N-06. null (default) = automatic: the SA token is mounted only
+  # when Vault Kubernetes auth is configured (providers.vault.enabled
+  # with kubernetesRole), because the agent reads it from
+  # /var/run/secrets/kubernetes.io/serviceaccount/token to log in to
+  # Vault. Otherwise the agent never talks to the Kubernetes API and the
+  # token stays off. IRSA / EKS Pod Identity don't need it (their
+  # webhooks project their own token). Applied to the pod spec as well,
+  # so it holds with serviceAccount.create=false. Set true/false to
+  # override; false with Vault Kubernetes auth fails the render. If you
+  # pass SB_VAULT_KUBERNETES_ROLE through the identity Secret instead of
+  # providers.vault.kubernetesRole, the chart can't see it: set true.
+  automountServiceAccountToken: null
 
 resources:
   requests:
@@ -137,8 +169,10 @@ cp:
 
 # ── Identity ─────────────────────────────────────────────────────────
 #
-# The agent identity is a (agent_id, agent_secret) pair issued ONCE
-# by the CP at mint time. Operator pre-creates a Secret carrying:
+# The agent identity is an (agent_id, agent_secret) pair the CP hands
+# out exactly once. The supported way to get one is enrollment (below):
+# the agent trades a one-time token for it and stores it in a file. The
+# static mode needs a pre-created Secret carrying:
 #
 #   SB_AGENT_ID:     <id>
 #   SB_AGENT_SECRET: <secret>
@@ -162,10 +196,12 @@ identity:
   #   file            ⟺  enrollment.enabled=true
   mode: existingSecret
 
-  # STATIC mode (mode=existingSecret — the live / production path). The
-  # operator pre-creates a Secret carrying SB_AGENT_ID + SB_AGENT_SECRET
+  # STATIC mode (mode=existingSecret, the default). The operator
+  # pre-creates a Secret carrying SB_AGENT_ID + SB_AGENT_SECRET
   # (+ optional keypair); wired via envFrom. NO writable storage, NO cluster
-  # API, readOnlyRootFilesystem stays true. This is the default.
+  # API, readOnlyRootFilesystem stays true. Getting that pair requires a
+  # credential the CP already issued (direct mint is off unless the CP
+  # sets SB_ALLOW_DIRECT_AGENT_MINT=true), so new installs use FILE mode.
   existingSecret: secrets-bridge-agent
 
   # FILE mode (mode=file — enrollment). The agent reads/writes its credential
@@ -190,8 +226,10 @@ identity:
 
 # ── Enrollment (agent-1 self-enrollment; charts-1) ───────────────────
 #
-# Enroll-on-first-boot. When enabled AND no credential is stored, the agent
-# exchanges a ONE-TIME token (POST /api/v1/agents/enroll) for a persistent
+# Enroll-on-first-boot. An admin creates the ONE-TIME token on the CP with
+# POST /api/v1/provider-connections/<id>/agent-enrollment-token. When enabled
+# AND no credential is stored, the agent exchanges that token
+# (POST /api/v1/agents/enroll) for a persistent
 # credential, writes it to identity.persistence, and heartbeats. On restart
 # it reuses the persisted credential and does NOT re-enroll (the one-time
 # token is spent exactly once). Requires identity.persistence (a writable,
