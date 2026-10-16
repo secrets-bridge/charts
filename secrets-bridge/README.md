@@ -16,13 +16,19 @@ kubectl create namespace secrets-bridge
 kubectl -n secrets-bridge apply -f my-env-secret.yaml
 
 # 2. Install with vault-transit OR aws-kms — never local in prod.
+#    env defaults to production, so every image must be pinned
+#    (see "Image pinning" below).
 helm install secrets-bridge ./charts/secrets-bridge \
   --namespace secrets-bridge \
   --set ingress.host=secrets-bridge.example.com \
   --set kms.backend=aws-kms \
   --set kms.awsKms.region=us-east-1 \
   --set kms.awsKms.keyId=alias/sb-wrap \
-  --set api.serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::123456789012:role/secrets-bridge-api
+  --set api.serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::123456789012:role/secrets-bridge-api \
+  --set api.image.digest=sha256:<api-digest> \
+  --set ui.image.digest=sha256:<ui-digest> \
+  --set worker.image.digest=sha256:<worker-digest> \
+  --set controller.image.digest=sha256:<controller-digest>
 ```
 
 ## What this chart does
@@ -100,23 +106,29 @@ api:
 | Guard | Behaviour |
 |---|---|
 | `kms.backend=local` + `env=production` | `helm install` **errors out** at template time. The api binary would also refuse to boot — the chart catches it first. |
-| `env` not in `{dev, production}` | Errors out at template time. |
-| `kms.backend` not in `{local, vault-transit, aws-kms}` | Errors out at template time. |
+| `env` not exactly `dev` or `production` | Errors out at template time. The match is case-sensitive (CHT-N-05), like the api and worker: `Production` would render and then crash-loop, so it's refused here. |
+| `kms.backend` not exactly `local`, `vault-transit` or `aws-kms` | Errors out at template time (case-sensitive too). |
 | `vault-transit` selected without `kms.vaultTransit.key` AND no `secrets.existingSecret` | Errors out. |
 | `aws-kms` selected without `kms.awsKms.region` / `keyId` AND no `secrets.existingSecret` | Errors out. |
-| `env=production` AND an enabled component resolves to a mutable `:dev` / `:latest` tag with no `image.digest` set | Errors out (CHT-03 / M11); see "Image pinning" below. |
+| `env=production` AND an enabled component has no `image.digest` and its tag isn't pinned (`X.Y.Z`, `vX.Y.Z`, optional `-prerelease`, or `sha-<hex>`) | Errors out (CHT-03 / M11, CHT-N-02); see "Image pinning" below. |
+| `<component>.image.digest` set to anything but a bare `sha256:<64 hex>` | Errors out in every `env`. |
 
 ## Image pinning
 
-Pre-v0.1.0, every component's `image.tag` defaults to `.Chart.AppVersion`, which is the literal string `"dev"`: whatever `main` last pushed. `pullPolicy` defaults to `Always` so a mutable tag at least never runs stale once a node has it cached, but under `env=production` the chart goes further and **refuses to render** unless you either:
+Pre-v0.1.0, every component's `image.tag` defaults to `.Chart.AppVersion`, which is the literal string `"dev"`: whatever `main` last pushed. The image builds also push `main`, `X.Y` and `X` tags that move the same way. `pullPolicy` defaults to `Always` so a mutable tag at least never runs stale once a node has it cached, but under `env=production` the chart goes further: a tag is only accepted if it's on an allow-list (CHT-N-02), and anything else **refuses to render**. Either:
 
-- set `<component>.image.tag` to a pinned release version, or
-- (preferred) set `<component>.image.digest` to an exact `sha256:...` manifest pin, which bypasses the tag entirely and is immune to the tag being repointed later.
+- (preferred) set `<component>.image.digest` to the bare `sha256:<64 hex>` manifest digest (no repository, no `@`; the chart renders `<repository>@<digest>`), which bypasses the tag entirely and is immune to the tag being repointed later, or
+- set `<component>.image.tag` to a full release version (`0.1.0`, `v0.1.0`, `1.2.0-rc.1`) or the `sha-<commit>` tag every image build pushes.
+
+`dev`, `latest`, `main`, `X.Y` (`0.1`) and `X` (`1`) are refused.
 
 ```yaml
 api:
   image:
     digest: "sha256:<64-hex-digest>"   # preferred: exact, immutable
+# or
+  image:
+    tag: "sha-1a2b3c4"                 # the build of one main commit
 # or
   image:
     tag: "0.1.0"                       # once a real release exists
@@ -152,7 +164,7 @@ ingress:
 
 `/healthz`, `/readyz`, and `/metrics` are intentionally kept off the public ingress (`ingress.apiPaths` defaults to `[/api]` only; see CHT-02 / charts#21). Reach them from inside the cluster instead:
 
-- **Metrics**: point a Prometheus `ServiceMonitor` at the api's ClusterIP Service (`app.kubernetes.io/component: api`), port `http`, path `/metrics`. The default `api.networkPolicy` (see below) only opens `:8080` to the ingress controller's namespace, so add an `extraRules` entry (or a namespace label your Prometheus operator already matches) if your scrape source lives elsewhere.
+- **Metrics**: point a Prometheus `ServiceMonitor` at the api's ClusterIP Service (`app.kubernetes.io/component: api`), port `http`, path `/metrics`. The default `api.networkPolicy` (see below) only opens `:8080` to the ingress controller's namespace, so a scrape from anywhere else, the release namespace included, is dropped. `extraRules` only covers egress; NetworkPolicies are additive, so add a separate policy that selects the api pods and admits your Prometheus namespace on TCP 8080.
 - **Health checks**: the Deployment's own `livenessProbe` / `readinessProbe` already hit `/healthz` and `/readyz` from the kubelet, no ingress path needed. If your ingress controller or an external load balancer wants an HTTP-level health check path instead, add `/healthz` back to `ingress.apiPaths`.
 
 ## NetworkPolicy
@@ -188,7 +200,9 @@ See each block's comments in `values.yaml` for worked `extraRules` examples (a P
 | `worker.enabled` | `true` | |
 | `controller.enabled` | `true` | |
 | `api.networkPolicy.enabled` / `ui.…` / `worker.…` / `controller.…` | `true` | Default-deny NetworkPolicy per component. |
-| `api.image.digest` / `ui.…` / `worker.…` / `controller.…` | `""` | Immutable `sha256:...` pin; overrides `image.tag` when set. |
+| `api.image.digest` / `ui.…` / `worker.…` / `controller.…` | `""` | Bare `sha256:<64 hex>` pin; overrides `image.tag` when set. |
+| `api.image.tag` / `ui.…` / `worker.…` / `controller.…` | `""` (→ `dev`) | Under `env=production` must be `X.Y.Z`, `vX.Y.Z` (optional `-prerelease`) or `sha-<hex>`. |
+| `api.serviceAccount.automountServiceAccountToken` / `worker.…` | `false` | Rendered on the pod spec too, so it holds with `serviceAccount.create=false`. ui is always `false`. |
 
 ## Roadmap
 

@@ -109,11 +109,16 @@ spec:
                     - namespace
                     type: object
                   type:
-                    description: Type is the registered provider name.
+                    description: |-
+                      Type is the registered provider name. Must match a kind registered in
+                      the operator's providers.Registry (see cmd/main.go) — today that is
+                      "aws-sm" (AWS Secrets Manager) and "vault" (HashiCorp Vault). GCP and
+                      Azure connectors are not implemented yet (BRD Phase 7+); adding one
+                      means registering its factory in cmd/main.go AND adding its kind
+                      string here in the same change, so the CRD can never admit a Type
+                      the registry will reject at reconcile time.
                     enum:
-                    - aws
-                    - gcp
-                    - azure
+                    - aws-sm
                     - vault
                     type: string
                 required:
@@ -132,8 +137,13 @@ spec:
                 description: |-
                   RefreshInterval is how often the controller re-reconciles even when
                   there are no Kubernetes events. Use a duration string like "5m".
-                  Default: "5m".
+                  Must be at least "30s". Default: "5m". "0s" is accepted and means
+                  the default, because Go clients send the zero value when the field
+                  is left unset.
                 type: string
+                x-kubernetes-validations:
+                - message: refreshInterval must be a duration of at least 30s
+                  rule: duration(self) == duration('0s') || duration(self) >= duration('30s')
               selector:
                 description: Selector narrows which secrets are in scope.
                 properties:
@@ -179,11 +189,16 @@ spec:
                     - namespace
                     type: object
                   type:
-                    description: Type is the registered provider name.
+                    description: |-
+                      Type is the registered provider name. Must match a kind registered in
+                      the operator's providers.Registry (see cmd/main.go) — today that is
+                      "aws-sm" (AWS Secrets Manager) and "vault" (HashiCorp Vault). GCP and
+                      Azure connectors are not implemented yet (BRD Phase 7+); adding one
+                      means registering its factory in cmd/main.go AND adding its kind
+                      string here in the same change, so the CRD can never admit a Type
+                      the registry will reject at reconcile time.
                     enum:
-                    - aws
-                    - gcp
-                    - azure
+                    - aws-sm
                     - vault
                     type: string
                 required:

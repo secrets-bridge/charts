@@ -88,3 +88,49 @@ when `digest` is set, `tag` is ignored entirely. Mirrors
 {{- printf "%s:%s" $repo (default .Chart.AppVersion .Values.image.tag) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Pinned-image allow-lists (CHT-N-01). Same patterns as
+`secrets-bridge.pinnedTagRegex` / `.digestRegex` in the control-plane
+chart; keep them in sync. Tags: full semver (`1.2.3`, `v1.2.3`,
+`1.2.3-rc.1`) or the `sha-<commit>` tag the agent's docker-publish
+workflow pushes. Digests: `sha256:` plus 64 lowercase hex characters.
+*/}}
+{{- define "secrets-bridge-agent.pinnedTagRegex" -}}
+^(v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?|sha-[0-9a-f]{7,64})$
+{{- end -}}
+
+{{- define "secrets-bridge-agent.digestRegex" -}}
+^sha256:[0-9a-f]{64}$
+{{- end -}}
+
+{{/*
+True when the agent authenticates to Vault with the Kubernetes auth
+method: the resolver then reads the pod's ServiceAccount token from the
+hard-pinned path /var/run/secrets/kubernetes.io/serviceaccount/token.
+Emits "true" or "".
+*/}}
+{{- define "secrets-bridge-agent.vaultKubernetesAuth" -}}
+{{- if and .Values.providers.vault.enabled .Values.providers.vault.kubernetesRole -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+Effective automountServiceAccountToken (CHT-N-06), used for both the
+ServiceAccount and the pod spec. An explicit true/false in
+serviceAccount.automountServiceAccountToken wins; unset (null, the
+default) means "only when Vault Kubernetes auth needs the token".
+AWS IRSA / EKS Pod Identity don't need it: their webhooks project
+their own token. Emits "true" or "false".
+*/}}
+{{- define "secrets-bridge-agent.automountServiceAccountToken" -}}
+{{- $explicit := toString .Values.serviceAccount.automountServiceAccountToken -}}
+{{- if has $explicit (list "true" "false") -}}
+{{- $explicit -}}
+{{- else if include "secrets-bridge-agent.vaultKubernetesAuth" . -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end -}}

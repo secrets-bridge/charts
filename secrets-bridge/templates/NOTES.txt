@@ -7,7 +7,7 @@ Namespace:      {{ .Release.Namespace }}
 Deployment mode: {{ .Values.env }}
 KMS backend:    {{ .Values.kms.backend }}
 
-{{- if eq (lower .Values.env) "dev" }}
+{{- if eq .Values.env "dev" }}
 
   ⚠️  SB_ENV=dev — the api WILL allow the LocalKMS backend and seed
   three dev users (admin / approver / requester) on first boot.

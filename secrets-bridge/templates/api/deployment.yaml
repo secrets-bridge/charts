@@ -34,6 +34,10 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "secrets-bridge.componentServiceAccountName" (dict "ctx" . "component" "api" "spec" .Values.api.serviceAccount) }}
+      # Set on the pod too (CHT-N-06): with serviceAccount.create=false the
+      # pod runs as an SA this chart doesn't render, often `default`, which
+      # mounts a token unless the pod opts out.
+      automountServiceAccountToken: {{ .Values.api.serviceAccount.automountServiceAccountToken | default false }}
       {{- with .Values.api.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -160,7 +164,7 @@ spec:
             {{- end }}
             - name: SB_KMS_BACKEND
               value: {{ .Values.kms.backend | quote }}
-            {{- if eq (lower .Values.kms.backend) "vault-transit" }}
+            {{- if eq .Values.kms.backend "vault-transit" }}
             {{- with .Values.kms.vaultTransit.addr }}
             - name: SB_KMS_VAULT_ADDR
               value: {{ . | quote }}
@@ -174,7 +178,7 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- end }}
-            {{- if eq (lower .Values.kms.backend) "aws-kms" }}
+            {{- if eq .Values.kms.backend "aws-kms" }}
             {{- with .Values.kms.awsKms.region }}
             - name: SB_KMS_AWS_REGION
               value: {{ . | quote }}

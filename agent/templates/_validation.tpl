@@ -28,7 +28,7 @@ the agent binary tries to boot.
 {{- end -}}
 {{- if not $enroll -}}
 {{- if not .Values.identity.existingSecret -}}
-{{- fail "secrets-bridge-agent: identity.existingSecret is required in static mode — pre-create the Secret carrying SB_AGENT_ID + SB_AGENT_SECRET from the CP mint response." -}}
+{{- fail "secrets-bridge-agent: identity.existingSecret is required in static mode — pre-create the Secret carrying SB_AGENT_ID + SB_AGENT_SECRET, or use enrollment instead (enrollment.enabled=true, identity.mode=file) with a token from POST /api/v1/provider-connections/<id>/agent-enrollment-token." -}}
 {{- end -}}
 {{- else -}}
 {{- if not .Values.enrollment.tokenSecretName -}}
@@ -45,5 +45,34 @@ the agent binary tries to boot.
 
 {{- if and (not (or (hasPrefix "http://" .Values.cp.endpoint) (hasPrefix "https://" .Values.cp.endpoint))) -}}
 {{- fail (printf "secrets-bridge-agent: cp.endpoint=%q is not an http(s) URL." .Values.cp.endpoint) -}}
+{{- end -}}
+
+{{- /*
+  Image pin guard (CHT-N-01). The control-plane chart enforces pinning
+  under env=production; this chart has no env value, so pinning is
+  enforced on every install and `image.allowMutableTag: true` is the
+  explicit, dev-only way out. The default tag is .Chart.AppVersion
+  ("dev" pre-v0.1.0, rebuilt on every push to main), so a default
+  install now has to choose a pin or the escape hatch.
+*/ -}}
+{{- $digest := toString (default "" .Values.image.digest) -}}
+{{- if $digest -}}
+{{- if not (regexMatch (include "secrets-bridge-agent.digestRegex" .) $digest) -}}
+{{- fail (printf "secrets-bridge-agent: image.digest=%q is not a digest. Set it to the bare sha256:<64 hex> value (no repository, no @); the chart renders <repository>@<digest> itself." $digest) -}}
+{{- end -}}
+{{- else if ne (toString .Values.image.allowMutableTag) "true" -}}
+{{- $tag := toString (default .Chart.AppVersion .Values.image.tag) -}}
+{{- if not (regexMatch (include "secrets-bridge-agent.pinnedTagRegex" .) $tag) -}}
+{{- fail (printf "secrets-bridge-agent: image resolves to tag %q, which is not a pinned image. Set image.digest to a bare sha256:<64 hex> digest (preferred), or image.tag to a full release version (X.Y.Z or vX.Y.Z, optional -prerelease) or an immutable sha-<hex> build tag. Moving tags such as dev, latest, main, X.Y and X are refused; for local dev only, set image.allowMutableTag=true." $tag) -}}
+{{- end -}}
+{{- end -}}
+
+{{- /*
+  Vault Kubernetes auth reads the ServiceAccount token from the
+  standard projected path, so it can't work with the token switched
+  off (CHT-N-06). Fail here instead of at the first Vault login.
+*/ -}}
+{{- if and (include "secrets-bridge-agent.vaultKubernetesAuth" .) (eq (include "secrets-bridge-agent.automountServiceAccountToken" .) "false") -}}
+{{- fail "secrets-bridge-agent: providers.vault.kubernetesRole is set (Vault Kubernetes auth) but serviceAccount.automountServiceAccountToken=false. The agent reads the ServiceAccount token from /var/run/secrets/kubernetes.io/serviceaccount/token to log in to Vault; leave automountServiceAccountToken unset (auto) or set it to true." -}}
 {{- end -}}
 {{- end -}}

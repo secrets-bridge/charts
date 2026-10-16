@@ -8,7 +8,10 @@ description: |
 
   Hard rules baked into this chart:
     - NO DATABASE_URL / REDIS_URL env vars surfaced (BRD §15, §24).
-    - Loopback-only probes (`127.0.0.1:8090`); no Service rendered.
+    - No Service rendered; probes reach the listener on the pod IP
+      (bindAddress, default 0.0.0.0:8090).
+    - Pinned image required (digest, X.Y.Z or sha-<hex>) unless
+      image.allowMutableTag=true for local dev.
     - Identity material lives in a Kubernetes Secret the operator
       pre-creates (static mode, default) — never in chart values. An
       optional enroll-on-first-boot mode persists a credential FILE on a

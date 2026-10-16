@@ -17,14 +17,13 @@ rules:
   # ClusterRole) for just the namespaces that need it, and add the
   # rule back here in lockstep with the controller-repo marker.
   #
-  # SecretsSync (cluster-scoped) full lifecycle.
+  # SecretsSync (cluster-scoped): the reconciler only reads the spec
+  # and writes status, and sets no finalizers (CTL-N-02). Mirrors the
+  # controller's config/rbac/role.yaml; keep the two in lockstep.
   - apiGroups: [sync.secrets-bridge.io]
     resources: [secretssyncs]
-    verbs: [create, delete, get, list, patch, update, watch]
-  - apiGroups: [sync.secrets-bridge.io]
-    resources: [secretssyncs/finalizers]
-    verbs: [update]
+    verbs: [get, list, watch]
   - apiGroups: [sync.secrets-bridge.io]
     resources: [secretssyncs/status]
-    verbs: [get, patch, update]
+    verbs: [patch, update]
 {{- end -}}

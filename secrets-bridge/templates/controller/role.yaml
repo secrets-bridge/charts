@@ -7,16 +7,15 @@ metadata:
   labels:
     {{- include "secrets-bridge.componentLabels" (dict "ctx" . "component" "controller") | nindent 4 }}
 rules:
-  # configmaps + leases — required by controller-runtime's leader
-  # election; ConfigMap is the legacy lock, Lease is the modern one,
-  # the binary uses both transparently.
-  - apiGroups: [""]
-    resources: [configmaps]
-    verbs: [get, list, watch, create, update, patch, delete]
+  # Leader election uses a Lease lock only: controller-runtime defaults
+  # to `leases`, and client-go's LeaseLock calls just get, create and
+  # update. No ConfigMap lock is used (CTL-N-02). Mirrors the
+  # controller's config/rbac/leader_election_role.yaml.
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
-    verbs: [get, list, watch, create, update, patch, delete]
-  # Events — the manager emits status events on reconcile failures.
+    verbs: [get, create, update]
+  # Events: the leader-election recorder posts core/v1 events in this
+  # namespace when the lease changes hands.
   - apiGroups: [""]
     resources: [events]
     verbs: [create, patch]

@@ -24,7 +24,7 @@ helm template ci-dev secrets-bridge/ <dev preset values> | kubeconform -strict -
 helm template ci-agent agent/ <agent preset values> | kubeconform -strict -summary -skip CustomResourceDefinition
 ```
 
-The `safety-rails` CI job checks that bad combinations fail at render time: `env=production` with `kms.backend=local`, unknown `env` or `kms.backend` values, production with a mutable image tag, an agent without `clusterName`, and an agent pointed at plain HTTP without `insecureTransport`. Add a case there whenever you add a guard.
+The `safety-rails` CI job checks that bad combinations fail at render time, and for the expected reason: `env=production` with `kms.backend=local`, unknown or wrongly cased `env` / `kms.backend` values, production with an unpinned image tag (`dev`, `latest`, `main`, `X.Y`, `X`) or a malformed digest, an agent with an unpinned image and no `image.allowMutableTag`, Vault Kubernetes auth with the SA token switched off, an agent without `clusterName`, and an agent pointed at plain HTTP without `insecureTransport`. It also checks that pinned images (digest, `X.Y.Z`, `sha-<hex>`) still render. Add a case there whenever you add a guard.
 
 ## Rules for this repo
 
