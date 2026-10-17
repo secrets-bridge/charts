@@ -37,6 +37,20 @@ name: chart-publish
 #
 # Until v0.1.0 ships, the only stable channel is the `-dev.<sha>`
 # series. After v0.1.0, the recommended pin is the semver tag.
+#
+# appVersion (the image tag every component defaults to):
+#
+#   Push to `main`              → Chart.yaml's appVersion (`dev`), left
+#                                 as is. The chart version names a
+#                                 commit in this repo, and no image is
+#                                 tagged with it (charts#31).
+#
+#   Push tag `v0.1.0`           → 0.1.0, the tag each app repo's
+#                                 docker-publish pushes for its own
+#                                 `v0.1.0` tag.
+#
+# Before `helm push`, the job renders the packaged chart and checks that
+# every image it references exists on GHCR, and fails if one doesn't.
 
 on:
   push:
@@ -78,8 +92,10 @@ jobs:
 
       - name: Resolve chart name + version
         id: chart
+        env:
+          CHART_DIR: ${{ matrix.chart }}
         run: |
-          cd ${{ matrix.chart }}
+          cd "$CHART_DIR"
           CHART_NAME=$(awk '/^name:/ {print $2; exit}' Chart.yaml)
           BASE_VERSION=$(awk '/^version:/ {print $2; exit}' Chart.yaml)
           echo "name=$CHART_NAME" >> "$GITHUB_OUTPUT"
@@ -88,39 +104,71 @@ jobs:
           if [[ "$REF" == refs/tags/v*.*.* ]]; then
             TAG="${REF#refs/tags/v}"
             if [[ "$TAG" != "$BASE_VERSION" ]]; then
-              echo "::error::Tag $REF (resolves to version $TAG) does not match Chart.yaml/version ($BASE_VERSION) in ${{ matrix.chart }}/. Bump Chart.yaml before tagging."
+              echo "::error::Tag $REF (resolves to version $TAG) does not match Chart.yaml/version ($BASE_VERSION) in $CHART_DIR/. Bump Chart.yaml before tagging."
               exit 1
             fi
             VERSION="$TAG"
             CHANNEL="release"
+            # The app repos push X.Y.Z (no `v`) for their vX.Y.Z tags.
+            # The image check below fails the job if one hasn't yet.
+            APP_VERSION="$TAG"
           else
             VERSION="${BASE_VERSION}-dev.${GITHUB_SHA:0:7}"
             CHANNEL="dev"
+            # Keep Chart.yaml's appVersion (`dev`). VERSION names a
+            # charts commit, which no image is tagged with (charts#31).
+            APP_VERSION=""
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
-          echo "Resolved chart=$CHART_NAME  version=$VERSION  channel=$CHANNEL"
+          {
+            echo "version=$VERSION"
+            echo "channel=$CHANNEL"
+            echo "app_version=$APP_VERSION"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved chart=$CHART_NAME  version=$VERSION  channel=$CHANNEL  app-version=${APP_VERSION:-<from Chart.yaml>}"
 
       - name: Package
         id: package
+        env:
+          CHART_DIR: ${{ matrix.chart }}
+          CHART_NAME: ${{ steps.chart.outputs.name }}
+          VERSION: ${{ steps.chart.outputs.version }}
+          APP_VERSION: ${{ steps.chart.outputs.app_version }}
+          DEST: ${{ runner.temp }}/packaged
         run: |
-          cd ${{ matrix.chart }}
-          helm package . \
-            --version "${{ steps.chart.outputs.version }}" \
-            --app-version "${{ steps.chart.outputs.version }}" \
-            --destination "${{ runner.temp }}/packaged"
-          ls -l "${{ runner.temp }}/packaged"
-          echo "tgz=${{ runner.temp }}/packaged/${{ steps.chart.outputs.name }}-${{ steps.chart.outputs.version }}.tgz" >> "$GITHUB_OUTPUT"
+          cd "$CHART_DIR"
+          args=(--version "$VERSION" --destination "$DEST")
+          if [ -n "$APP_VERSION" ]; then
+            args+=(--app-version "$APP_VERSION")
+          fi
+          helm package . "${args[@]}"
+          ls -l "$DEST"
+          TGZ="$DEST/$CHART_NAME-$VERSION.tgz"
+          echo "Packaged chart $(helm show chart "$TGZ" | grep -E '^(version|appVersion):' | tr '\n' ' ')"
+          echo "tgz=$TGZ" >> "$GITHUB_OUTPUT"
 
       - name: Lint + render the packaged tarball
+        env:
+          TGZ: ${{ steps.package.outputs.tgz }}
+          # A render that needs no image pins (env=dev for the control
+          # plane, allowMutableTag for the agent), so every image keeps
+          # its default reference for the check below.
+          RENDER_FLAGS: ${{ matrix.chart == 'agent' && '--set clusterName=ci --set cp.endpoint=https://x.example.com --set image.allowMutableTag=true' || '--set env=dev --set kms.backend=local --set ingress.host=x.example.com' }}
+          RENDERED: ${{ runner.temp }}/rendered.yaml
         run: |
           # Belt-and-braces: verify the tarball helm just produced
           # actually lints clean (catches packaging-time regressions
           # the file-tree lint doesn't see).
-          helm lint "${{ steps.package.outputs.tgz }}"
-          helm template ci-smoke "${{ steps.package.outputs.tgz }}" \
-            ${{ matrix.chart == 'agent' && '--set clusterName=ci --set cp.endpoint=https://x.example.com' || '--set env=dev --set kms.backend=local --set ingress.host=x.example.com' }} \
-            > /dev/null
+          helm lint "$TGZ"
+          # shellcheck disable=SC2086 # RENDER_FLAGS is a list of flags
+          helm template ci-smoke "$TGZ" $RENDER_FLAGS > "$RENDERED"
+
+      - name: Check the default images exist on GHCR
+        # A chart must not default to an image that was never pushed
+        # (charts#31). Every image the render above references has to
+        # resolve on GHCR, or the job stops here, before `helm push`.
+        env:
+          RENDERED: ${{ runner.temp }}/rendered.yaml
+        run: .github/scripts/check-image-refs.sh "$RENDERED"
 
       - name: Helm registry login (GHCR)
         run: |

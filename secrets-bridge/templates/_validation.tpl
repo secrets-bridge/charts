@@ -45,13 +45,17 @@ in production-mode deployments.
 {{/*
 Image pin guard (CHT-03 / M11, tightened by CHT-N-02). With no
 `image.tag` override, every component resolves to `.Chart.AppVersion`.
-Pre-v0.1.0 that's the literal string "dev", i.e. whatever `main` last
-pushed. The app repos also publish `main`, `X.Y` and `X` tags that move
-on every push or release, so under env=production a tag is accepted
-only when it is on an allow-list of pinned shapes (see
-`secrets-bridge.pinnedTagRegex`). `image.digest` (an exact manifest pin)
-bypasses the tag check; it must be a bare `sha256:<64 hex>` value in
-every env, because the chart renders it as `<repo>@<digest>`.
+In this repo and in every chart published from `main` that's the
+literal string "dev", i.e. whatever `main` last pushed; a chart published
+from a `vX.Y.Z` tag defaults to `X.Y.Z` (chart-publish.yml checks that
+every default image has it, charts#31). The app repos also publish
+`main`, `X.Y` and `X` tags that move on every push or release, so under
+env=production a tag is accepted only when it is on an allow-list of
+pinned shapes (see `secrets-bridge.pinnedTagRegex`) and isn't a chart
+dev version (`secrets-bridge.chartDevVersionRegex`). `image.digest` (an
+exact manifest pin) bypasses the tag check; it must be a bare
+`sha256:<64 hex>` value in every env, because the chart renders it as
+`<repo>@<digest>`.
 */}}
 {{- define "secrets-bridge.validateImageTags" -}}
 {{- $components := dict "api" .Values.api "ui" .Values.ui "worker" .Values.worker "controller" .Values.controller -}}
@@ -64,8 +68,8 @@ every env, because the chart renders it as `<repo>@<digest>`.
 {{- end -}}
 {{- else if eq $.Values.env "production" -}}
 {{- $tag := toString (default $.Chart.AppVersion $spec.image.tag) -}}
-{{- if not (regexMatch (include "secrets-bridge.pinnedTagRegex" $) $tag) -}}
-{{- fail (printf "secrets-bridge: %s.image resolves to tag %q, which is not a pinned image under env=production. Set %s.image.digest to a bare sha256:<64 hex> digest (preferred), or %s.image.tag to a full release version (X.Y.Z or vX.Y.Z, optional -prerelease) or an immutable sha-<hex> build tag. Moving tags such as dev, latest, main, X.Y and X are refused." $name $tag $name $name) -}}
+{{- if or (not (regexMatch (include "secrets-bridge.pinnedTagRegex" $) $tag)) (regexMatch (include "secrets-bridge.chartDevVersionRegex" $) $tag) -}}
+{{- fail (printf "secrets-bridge: %s.image resolves to tag %q, which is not a pinned image under env=production. Set %s.image.digest to a bare sha256:<64 hex> digest (preferred), or %s.image.tag to a full release version (X.Y.Z or vX.Y.Z, optional -prerelease) or an immutable sha-<hex> build tag. Moving tags such as dev, latest, main, X.Y and X are refused, and so are chart dev versions (X.Y.Z-dev.<sha>), which no image is tagged with." $name $tag $name $name) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -86,6 +90,18 @@ workflow pushes. Digests: `sha256:` plus 64 lowercase hex characters.
 
 {{- define "secrets-bridge.digestRegex" -}}
 ^sha256:[0-9a-f]{64}$
+{{- end -}}
+
+{{/*
+`X.Y.Z-dev.<sha>` is the version chart-publish.yml gives a chart built
+from `main`, and the `<sha>` is a commit in this repo. It matches
+`pinnedTagRegex` as a semver prerelease, but no image is tagged with it.
+Charts published before charts#31 used it as appVersion, so refuse it
+explicitly: a chart version copied into `image.tag`, or the same publish
+mistake again, then fails the render instead of passing as a pin.
+*/}}
+{{- define "secrets-bridge.chartDevVersionRegex" -}}
+^v?[0-9]+\.[0-9]+\.[0-9]+-dev\.
 {{- end -}}
 
 {{/*

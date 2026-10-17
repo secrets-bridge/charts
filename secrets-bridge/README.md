@@ -110,17 +110,17 @@ api:
 | `kms.backend` not exactly `local`, `vault-transit` or `aws-kms` | Errors out at template time (case-sensitive too). |
 | `vault-transit` selected without `kms.vaultTransit.key` AND no `secrets.existingSecret` | Errors out. |
 | `aws-kms` selected without `kms.awsKms.region` / `keyId` AND no `secrets.existingSecret` | Errors out. |
-| `env=production` AND an enabled component has no `image.digest` and its tag isn't pinned (`X.Y.Z`, `vX.Y.Z`, optional `-prerelease`, or `sha-<hex>`) | Errors out (CHT-03 / M11, CHT-N-02); see "Image pinning" below. |
+| `env=production` AND an enabled component has no `image.digest` and its tag isn't pinned (`X.Y.Z`, `vX.Y.Z`, optional `-prerelease`, or `sha-<hex>`; a chart dev version `X.Y.Z-dev.<sha>` doesn't count) | Errors out (CHT-03 / M11, CHT-N-02); see "Image pinning" below. |
 | `<component>.image.digest` set to anything but a bare `sha256:<64 hex>` | Errors out in every `env`. |
 
 ## Image pinning
 
-Pre-v0.1.0, every component's `image.tag` defaults to `.Chart.AppVersion`, which is the literal string `"dev"`: whatever `main` last pushed. The image builds also push `main`, `X.Y` and `X` tags that move the same way. `pullPolicy` defaults to `Always` so a mutable tag at least never runs stale once a node has it cached, but under `env=production` the chart goes further: a tag is only accepted if it's on an allow-list (CHT-N-02), and anything else **refuses to render**. Either:
+Every component's `image.tag` defaults to `.Chart.AppVersion`. In this repo and in every chart published from `main` (versions like `0.0.1-dev.<sha>`), that's the literal string `"dev"`: whatever `main` last pushed. A chart published from a `vX.Y.Z` tag defaults to the `X.Y.Z` images, and the publish job refuses to push it unless every default image has that tag. The image builds also push `main`, `X.Y` and `X` tags, which move like `dev` does. `pullPolicy` defaults to `Always` so a mutable tag at least never runs stale once a node has it cached, but under `env=production` the chart goes further: a tag is only accepted if it's on an allow-list (CHT-N-02), and anything else **refuses to render**. Either:
 
 - (preferred) set `<component>.image.digest` to the bare `sha256:<64 hex>` manifest digest (no repository, no `@`; the chart renders `<repository>@<digest>`), which bypasses the tag entirely and is immune to the tag being repointed later, or
 - set `<component>.image.tag` to a full release version (`0.1.0`, `v0.1.0`, `1.2.0-rc.1`) or the `sha-<commit>` tag every image build pushes.
 
-`dev`, `latest`, `main`, `X.Y` (`0.1`) and `X` (`1`) are refused.
+`dev`, `latest`, `main`, `X.Y` (`0.1`) and `X` (`1`) are refused. So is a chart dev version such as `0.0.1-dev.<sha>`: it looks like a semver prerelease, but the `<sha>` is a commit in this repo and no image is tagged with it.
 
 ```yaml
 api:

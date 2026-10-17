@@ -51,9 +51,14 @@ the agent binary tries to boot.
   Image pin guard (CHT-N-01). The control-plane chart enforces pinning
   under env=production; this chart has no env value, so pinning is
   enforced on every install and `image.allowMutableTag: true` is the
-  explicit, dev-only way out. The default tag is .Chart.AppVersion
-  ("dev" pre-v0.1.0, rebuilt on every push to main), so a default
-  install now has to choose a pin or the escape hatch.
+  explicit, dev-only way out. The default tag is .Chart.AppVersion:
+  "dev" (rebuilt on every push to main) in this repo and in every
+  chart published from main, so a default install of those has to
+  choose a pin or the escape hatch. A chart published from a vX.Y.Z
+  tag defaults to X.Y.Z, which chart-publish.yml checks exists
+  (charts#31). Chart dev versions (X.Y.Z-dev.<sha>) are refused even
+  though they look like a semver prerelease; see
+  secrets-bridge-agent.chartDevVersionRegex.
 */ -}}
 {{- $digest := toString (default "" .Values.image.digest) -}}
 {{- if $digest -}}
@@ -62,8 +67,8 @@ the agent binary tries to boot.
 {{- end -}}
 {{- else if ne (toString .Values.image.allowMutableTag) "true" -}}
 {{- $tag := toString (default .Chart.AppVersion .Values.image.tag) -}}
-{{- if not (regexMatch (include "secrets-bridge-agent.pinnedTagRegex" .) $tag) -}}
-{{- fail (printf "secrets-bridge-agent: image resolves to tag %q, which is not a pinned image. Set image.digest to a bare sha256:<64 hex> digest (preferred), or image.tag to a full release version (X.Y.Z or vX.Y.Z, optional -prerelease) or an immutable sha-<hex> build tag. Moving tags such as dev, latest, main, X.Y and X are refused; for local dev only, set image.allowMutableTag=true." $tag) -}}
+{{- if or (not (regexMatch (include "secrets-bridge-agent.pinnedTagRegex" .) $tag)) (regexMatch (include "secrets-bridge-agent.chartDevVersionRegex" .) $tag) -}}
+{{- fail (printf "secrets-bridge-agent: image resolves to tag %q, which is not a pinned image. Set image.digest to a bare sha256:<64 hex> digest (preferred), or image.tag to a full release version (X.Y.Z or vX.Y.Z, optional -prerelease) or an immutable sha-<hex> build tag. Moving tags such as dev, latest, main, X.Y and X are refused, and so are chart dev versions (X.Y.Z-dev.<sha>), which no image is tagged with; for local dev only, set image.allowMutableTag=true." $tag) -}}
 {{- end -}}
 {{- end -}}
 

@@ -105,6 +105,17 @@ workflow pushes. Digests: `sha256:` plus 64 lowercase hex characters.
 {{- end -}}
 
 {{/*
+Chart dev versions (`X.Y.Z-dev.<charts commit>`, what chart-publish.yml
+names a chart built from main). They match pinnedTagRegex as a semver
+prerelease, but no image is tagged with one, and charts published
+before charts#31 used one as appVersion. Same pattern as
+`secrets-bridge.chartDevVersionRegex`; keep them in sync.
+*/}}
+{{- define "secrets-bridge-agent.chartDevVersionRegex" -}}
+^v?[0-9]+\.[0-9]+\.[0-9]+-dev\.
+{{- end -}}
+
+{{/*
 True when the agent authenticates to Vault with the Kubernetes auth
 method: the resolver then reads the pod's ServiceAccount token from the
 hard-pinned path /var/run/secrets/kubernetes.io/serviceaccount/token.
