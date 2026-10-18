@@ -7,9 +7,12 @@
 #          → { enrollment_token, expires_at, ... }
 #      (Direct mint, POST /api/v1/agents, returns 403 unless the CP runs
 #      with SB_ALLOW_DIRECT_AGENT_MINT=true, a break-glass switch.)
-#   2. Put the token in a Secret in the workload cluster:
-#        kubectl create secret generic secrets-bridge-agent-enroll \
-#          --from-literal=enrollment_token=<token>
+#   2. Put the token in a Secret in the workload cluster, reading it at a
+#      silent prompt so it stays out of shell history and the process list:
+#        read -rs SB_ENROLL_TOKEN
+#        printf '%s' "$SB_ENROLL_TOKEN" | kubectl create secret generic \
+#          secrets-bridge-agent-enroll --from-file=enrollment_token=/dev/stdin
+#        unset SB_ENROLL_TOKEN
 #   3. Install with enrollment.enabled=true, identity.mode=file and
 #      identity.persistence.enabled=true. On first boot the agent trades
 #      the token at POST /api/v1/agents/enroll for its credential and
@@ -265,9 +268,12 @@ identity:
 # restart-persistent volume) — a read-only Secret mount cannot enroll.
 #
 # The one-time token is read from an EXISTING Secret you create — never set
-# it as a plaintext chart value (it must not render into a manifest):
-#   kubectl create secret generic <name> \
-#     --from-literal=enrollment_token=<TOKEN>
+# it as a plaintext chart value (it must not render into a manifest), and
+# keep it off the command line:
+#   read -rs SB_ENROLL_TOKEN
+#   printf '%s' "$SB_ENROLL_TOKEN" | kubectl create secret generic <name> \
+#     --from-file=enrollment_token=/dev/stdin
+#   unset SB_ENROLL_TOKEN
 enrollment:
   enabled: false
   tokenSecretName: ""
