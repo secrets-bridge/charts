@@ -556,6 +556,13 @@ jobs:
           .github/scripts/expect-render.sh reject 'must be a bare file name' agent/ \
             $AGENT $ENROLL --set identity.privateKeyFileName=keys/agent.key
 
+      - name: agent privateKeyFileName "." or ".." must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'must be a bare file name' agent/ \
+            $AGENT $ENROLL --set identity.privateKeyFileName=.
+          .github/scripts/expect-render.sh reject 'must be a bare file name' agent/ \
+            $AGENT $ENROLL --set identity.privateKeyFileName=..
+
       - name: agent file mode with privateKeyFileName empty (ephemeral key) must be accepted
         run: |
           .github/scripts/expect-render.sh accept agent/ $AGENT $ENROLL --set identity.privateKeyFileName=
