@@ -38,7 +38,7 @@ the agent binary tries to boot.
 {{- fail "secrets-bridge-agent: enrollment.enabled=true requires a WRITABLE, restart-persistent identity volume — set identity.persistence.enabled=true (chart provisions a PVC) or identity.persistence.existingClaim. emptyDir is NOT acceptable: a restart would lose the credential and the one-time enrollment token cannot be reused." -}}
 {{- end -}}
 {{- with .Values.identity.privateKeyFileName -}}
-{{- if contains "/" . -}}
+{{- if or (contains "/" .) (eq . ".") (eq . "..") -}}
 {{- fail (printf "secrets-bridge-agent: identity.privateKeyFileName=%q must be a bare file name; the key is written under identity.mountPath." .) -}}
 {{- end -}}
 {{- if eq . $.Values.identity.fileName -}}
