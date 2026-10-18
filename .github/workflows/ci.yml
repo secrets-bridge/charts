@@ -260,6 +260,13 @@ jobs:
           .github/scripts/expect-render.sh reject 'controller.image resolves to tag "1", which is not a pinned image' secrets-bridge/ \
             $PROD $PINNED --set controller.image.tag=1
 
+      # charts#31: a chart dev version looks like a semver prerelease,
+      # but no image is tagged with it.
+      - name: production + chart dev version (X.Y.Z-dev.<sha>) as tag must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'api.image resolves to tag "0.0.1-dev.0123abc", which is not a pinned image' secrets-bridge/ \
+            $PROD $PINNED --set api.image.tag=0.0.1-dev.0123abc
+
       - name: repo@sha256 digest must be rejected
         run: |
           .github/scripts/expect-render.sh reject 'api.image.digest="ghcr.io/secrets-bridge/api@sha256:' secrets-bridge/ \
@@ -297,6 +304,11 @@ jobs:
         run: |
           .github/scripts/expect-render.sh reject 'image resolves to tag "main", which is not a pinned image' agent/ \
             $AGENT --set image.tag=main
+
+      - name: agent chart dev version (X.Y.Z-dev.<sha>) as tag must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'image resolves to tag "0.0.2-dev.0123abc", which is not a pinned image' agent/ \
+            $AGENT --set image.tag=0.0.2-dev.0123abc
 
       - name: agent repo@sha256 digest must be rejected
         run: |

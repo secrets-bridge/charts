@@ -2,7 +2,7 @@
 
 Helm chart for the **Secrets Bridge agent** — the outbound execution agent deployed inside each workload cluster / target boundary. Distinct chart from `secrets-bridge/` (the control-plane install) because the agent has a fundamentally different lifecycle: one agent per cluster, outbound-only, no Postgres / no Redis.
 
-> Pre-v0.1.0 — both the chart and the image roll on the `:dev` tag. First release will bump both to `v0.1.0`. The chart won't render `:dev` (or any moving tag) unless `image.allowMutableTag=true`; pin a `sha-<commit>` tag or a digest instead.
+> Pre-v0.1.0, the chart and the image both roll on `:dev`, and every chart published from `main` defaults the image to the `:dev` tag. First release will bump both to `v0.1.0`. The chart won't render `:dev` (or any moving tag) unless `image.allowMutableTag=true`; pin a `sha-<commit>` tag or a digest instead.
 
 ## Boot sequence
 
@@ -61,7 +61,7 @@ helm install agent ./charts/agent \
 |---|---|
 | No Postgres / Redis env vars surfaced | Chart never references DATABASE_URL / REDIS_URL — matches the agent repo's `no-db-or-redis` CI guard |
 | No inbound listener | No Service rendered; the default NetworkPolicy sets `ingress: []`. The probe listener binds `bindAddress` (default `0.0.0.0:8090`) so the kubelet can reach it on the pod IP; set `bindAddress: 127.0.0.1` plus `exec` probes for loopback-only (needs an image with a shell) |
-| Pinned image | The image must be a digest, a full `X.Y.Z` / `vX.Y.Z` tag or a `sha-<hex>` tag. Moving tags (`dev`, `latest`, `main`, `X.Y`, `X`) fail template-time unless `image.allowMutableTag=true` (local dev only) |
+| Pinned image | The image must be a digest, a full `X.Y.Z` / `vX.Y.Z` tag or a `sha-<hex>` tag. Moving tags (`dev`, `latest`, `main`, `X.Y`, `X`) and chart dev versions (`X.Y.Z-dev.<sha>`, which no image is tagged with) fail template-time unless `image.allowMutableTag=true` (local dev only) |
 | No ServiceAccount token unless needed | `automountServiceAccountToken` is off on the SA and the pod unless Vault Kubernetes auth is configured, which reads the token from `/var/run/secrets/kubernetes.io/serviceaccount/token` |
 | Identity NEVER in chart values | `identity.existingSecret` references a pre-created K8s Secret. Chart values are committable; identity material is not. |
 | Plain HTTP refused | `cp.endpoint=http://...` fails template-time unless `cp.insecureTransport=true` is set explicitly |
