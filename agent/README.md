@@ -31,10 +31,14 @@ curl -X POST https://secrets-bridge.example.com/api/v1/provider-connections/<con
   -d '{"expected_cluster_name":"prod-eu","expected_provider_type":"vault"}'
 # → { "enrollment_token": "...", "expires_at": "...", ... }
 
-# 2. Put the token in a Secret in the workload cluster.
+# 2. Put the token in a Secret in the workload cluster. bash or zsh:
+#    paste the token at the silent prompt, then Enter. It never reaches
+#    a command line, your shell history or the process list.
 kubectl create namespace secrets-bridge
-kubectl -n secrets-bridge create secret generic secrets-bridge-agent-enroll \
-  --from-literal=enrollment_token=<token>
+read -rs SB_ENROLL_TOKEN
+printf '%s' "$SB_ENROLL_TOKEN" | kubectl -n secrets-bridge create secret generic secrets-bridge-agent-enroll \
+  --from-file=enrollment_token=/dev/stdin
+unset SB_ENROLL_TOKEN
 
 # 3. Install the chart. Pin the image (digest shown; a full X.Y.Z or a
 #    sha-<commit> tag also works).
@@ -101,11 +105,13 @@ agent:
   region: eu-central-1
 ```
 
-The one-time token is read from a Secret you create — never render it into chart values:
+The one-time token is read from a Secret you create — never render it into chart values, and keep it off the command line (paste it at the silent prompt):
 
 ```
-kubectl create secret generic my-enroll-token \
-  --from-literal=enrollment_token=<TOKEN-from-the-CP>
+read -rs SB_ENROLL_TOKEN
+printf '%s' "$SB_ENROLL_TOKEN" | kubectl create secret generic my-enroll-token \
+  --from-file=enrollment_token=/dev/stdin
+unset SB_ENROLL_TOKEN
 ```
 
 ## Identity Secret keys (static mode)

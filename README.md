@@ -63,10 +63,14 @@ curl -X POST https://secrets-bridge.example.com/api/v1/provider-connections/<con
   -d '{"expected_cluster_name":"prod-eu","expected_provider_type":"vault"}'
 # → { "enrollment_token": "...", "expires_at": "...", ... }
 
-# 2. Put the token in a Secret in the WORKLOAD cluster.
+# 2. Put the token in a Secret in the WORKLOAD cluster. bash or zsh:
+#    paste the token at the silent prompt, then Enter. It never reaches
+#    a command line, your shell history or the process list.
 kubectl create namespace secrets-bridge
-kubectl -n secrets-bridge create secret generic secrets-bridge-agent-enroll \
-  --from-literal=enrollment_token=<token>
+read -rs SB_ENROLL_TOKEN
+printf '%s' "$SB_ENROLL_TOKEN" | kubectl -n secrets-bridge create secret generic secrets-bridge-agent-enroll \
+  --from-file=enrollment_token=/dev/stdin
+unset SB_ENROLL_TOKEN
 
 # 3. Install. On first boot the agent trades the token at
 #    POST /api/v1/agents/enroll and keeps its credential on the PVC.
