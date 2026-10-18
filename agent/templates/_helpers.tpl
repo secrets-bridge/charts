@@ -150,3 +150,20 @@ true
 false
 {{- end -}}
 {{- end -}}
+
+{{/*
+Pod securityContext. FILE mode with an fsGroup defaults fsGroupChangePolicy
+to OnRootMismatch: with the Kubernetes default (Always) kubelet re-adds group
+bits to the identity and key files on every mount, and the agent has to
+tighten them back to owner-only at each start. An explicit
+podSecurityContext.fsGroupChangePolicy wins.
+*/}}
+{{- define "secrets-bridge-agent.podSecurityContext" -}}
+{{- $ctx := deepCopy (default (dict) .Values.podSecurityContext) -}}
+{{- if and (include "secrets-bridge-agent.fileMode" .) (hasKey $ctx "fsGroup") (not (hasKey $ctx "fsGroupChangePolicy")) -}}
+{{- $_ := set $ctx "fsGroupChangePolicy" "OnRootMismatch" -}}
+{{- end -}}
+{{- if $ctx -}}
+{{- toYaml $ctx -}}
+{{- end -}}
+{{- end -}}

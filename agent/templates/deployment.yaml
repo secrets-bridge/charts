@@ -16,10 +16,17 @@ spec:
   strategy:
     {{- toYaml .Values.strategy | nindent 4 }}
   {{- else if include "secrets-bridge-agent.fileMode" . }}
-  # The identity PVC is ReadWriteOnce: stop the old pod before starting the
-  # new one, or a RollingUpdate surge pod waits on the volume forever.
+  # The identity PVC is ReadWriteOnce: scale the old pod down before creating the
+  # new one, or a surge pod waits on the volume forever. This is a
+  # RollingUpdate with no surge rather than type Recreate: server-side apply
+  # (Argo CD ServerSideApply=true, Flux, kubectl apply --server-side) leaves
+  # the defaulted rollingUpdate block on an existing Deployment in place, and
+  # the API server rejects rollingUpdate under Recreate.
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 100%
   {{- end }}
   selector:
     matchLabels:
@@ -42,7 +49,7 @@ spec:
       # namespace's `default` SA) doesn't hand the agent a token it only
       # needs for Vault Kubernetes auth.
       automountServiceAccountToken: {{ include "secrets-bridge-agent.automountServiceAccountToken" . }}
-      {{- with .Values.podSecurityContext }}
+      {{- with (include "secrets-bridge-agent.podSecurityContext" . | fromYaml) }}
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}

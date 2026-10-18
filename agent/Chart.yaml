@@ -50,6 +50,20 @@ annotations:
   artifacthub.io/changes: |
     - kind: fixed
       description: |
+        agent: file mode now uses a RollingUpdate with maxSurge 0 and
+        maxUnavailable 100% instead of type Recreate. Under server-side
+        apply (Argo CD ServerSideApply=true, Flux, kubectl apply
+        --server-side) the switch to Recreate failed on existing installs,
+        because the defaulted strategy.rollingUpdate stayed on the live
+        Deployment and the API server rejects it under Recreate.
+    - kind: changed
+      description: |
+        agent: file mode defaults podSecurityContext.fsGroupChangePolicy to
+        OnRootMismatch (when fsGroup is set), so kubelet stops re-adding
+        group bits to the identity and key files on every mount. An explicit
+        value wins.
+    - kind: fixed
+      description: |
         agent: file mode (enrollment) now uses a Recreate update strategy.
         The identity PVC is ReadWriteOnce, so a RollingUpdate surge pod
         could never attach it and every rollout hung. New `strategy`

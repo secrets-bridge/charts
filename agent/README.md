@@ -77,6 +77,11 @@ The agent's credential comes from one of two modes (`identity.mode`), 1:1 with `
 - **`existingSecret` (chart default).** The operator pre-creates a Secret with `SB_AGENT_ID` + `SB_AGENT_SECRET`; wired via `envFrom`. No writable storage, no cluster-API access, `readOnlyRootFilesystem` stays true. Only usable when you already hold an agent credential: direct mint is disabled on the CP unless `SB_ALLOW_DIRECT_AGENT_MINT=true`.
 - **`file` (enroll-on-first-boot, the onboarding path).** `enrollment.enabled=true`. An admin creates a one-time token with `POST /api/v1/provider-connections/<id>/agent-enrollment-token`; on first boot the agent exchanges it at `POST /api/v1/agents/enroll` for a persistent credential and writes it to `<identity.mountPath>/<identity.fileName>` on a **writable, restart-persistent PVC**; it reuses that credential on restart (the one-time token is spent exactly once). Requires `identity.persistence.enabled=true` (or a BYO `existingClaim`) — `emptyDir` is rejected, and a Kubernetes Secret can't back it (the agent has no Secret-write RBAC).
 
+In file mode the chart also sets two defaults for the identity volume:
+
+- **Update strategy.** The PVC is ReadWriteOnce, so the Deployment uses a RollingUpdate with `maxSurge: 0` and `maxUnavailable: 100%`: the old pod is scaled down before the new one is created, and a rollout never waits on a surge pod that can't attach the volume. It is not `type: Recreate` because server-side apply (Argo CD `ServerSideApply=true`, Flux, `kubectl apply --server-side`) keeps the defaulted `rollingUpdate` block on an existing Deployment, and the API server rejects that block under `Recreate`. Override with `strategy`.
+- **`fsGroupChangePolicy: OnRootMismatch`** in the pod `securityContext` (when `fsGroup` is set), so kubelet stops re-adding group bits to the identity and key files on every mount. An explicit `podSecurityContext.fsGroupChangePolicy` wins.
+
 ```yaml
 # Enrollment mode (Option B) — opt-in
 enrollment:

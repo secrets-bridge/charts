@@ -60,12 +60,20 @@ clusterName: ""
 
 replicaCount: 1
 
-# Deployment update strategy. Empty (default) = automatic: Recreate in FILE
-# mode, the Kubernetes default (RollingUpdate) otherwise. The identity volume
-# is ReadWriteOnce, so a RollingUpdate surge pod can't attach it while the old
-# pod still holds it, and the old pod isn't stopped until the new one is
-# Ready: every rollout (chart upgrade, Reloader restart) hangs. Set this only
+# Deployment update strategy. Empty (default) = automatic. In FILE mode the
+# chart renders a RollingUpdate with maxSurge 0 and maxUnavailable 100%: the
+# old pod is scaled down before the new one is created. The identity volume
+# is ReadWriteOnce, so the Kubernetes default (a surge pod first, the old pod
+# stopped only once the new one is Ready) hangs every rollout (chart upgrade,
+# Reloader restart). Otherwise the Kubernetes default applies. Set this only
 # to override, e.g. with a ReadWriteMany existingClaim.
+#
+# If you set type: Recreate on an existing Deployment and deploy with
+# server-side apply (Argo CD ServerSideApply=true, Flux, kubectl apply
+# --server-side), the apply fails: the defaulted rollingUpdate block stays on
+# the live object and the API server rejects it under Recreate. Clear it once
+# with: kubectl patch deploy <name> --type=json \
+#   -p '[{"op":"replace","path":"/spec/strategy","value":{"type":"Recreate"}}]'
 strategy: {}
 
 serviceAccount:
@@ -95,6 +103,10 @@ resources:
     cpu: 500m
     memory: 256Mi
 
+# In FILE mode the chart adds fsGroupChangePolicy: OnRootMismatch when
+# fsGroup is set and fsGroupChangePolicy is not, so kubelet stops re-adding
+# group bits to the identity and key files on every mount. Set
+# fsGroupChangePolicy here to override (e.g. Always).
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532
