@@ -37,6 +37,14 @@ the agent binary tries to boot.
 {{- if not (or .Values.identity.persistence.enabled .Values.identity.persistence.existingClaim) -}}
 {{- fail "secrets-bridge-agent: enrollment.enabled=true requires a WRITABLE, restart-persistent identity volume — set identity.persistence.enabled=true (chart provisions a PVC) or identity.persistence.existingClaim. emptyDir is NOT acceptable: a restart would lose the credential and the one-time enrollment token cannot be reused." -}}
 {{- end -}}
+{{- with .Values.identity.privateKeyFileName -}}
+{{- if contains "/" . -}}
+{{- fail (printf "secrets-bridge-agent: identity.privateKeyFileName=%q must be a bare file name; the key is written under identity.mountPath." .) -}}
+{{- end -}}
+{{- if eq . $.Values.identity.fileName -}}
+{{- fail (printf "secrets-bridge-agent: identity.privateKeyFileName=%q must differ from identity.fileName; the private key and the enrolled credential are separate files." .) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{- if and (hasPrefix "http://" .Values.cp.endpoint) (not .Values.cp.insecureTransport) -}}

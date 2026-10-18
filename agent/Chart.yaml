@@ -48,6 +48,19 @@ annotations:
     - name: Agent repository
       url: https://github.com/secrets-bridge/agent
   artifacthub.io/changes: |
+    - kind: fixed
+      description: |
+        agent: file mode (enrollment) now uses a Recreate update strategy.
+        The identity PVC is ReadWriteOnce, so a RollingUpdate surge pod
+        could never attach it and every rollout hung. New `strategy`
+        value overrides (e.g. with a ReadWriteMany existingClaim).
+    - kind: added
+      description: |
+        agent: file mode keeps the wire-envelope private key on the
+        identity volume (identity.privateKeyFileName, default agent.key,
+        wired to SB_AGENT_PRIVATE_KEY_FILE). The agent generates it on
+        first boot and reuses it, so its registered public key survives
+        restarts. Set to "" for the previous ephemeral keypair.
     - kind: added
       description: |
         agent: optional enroll-on-first-boot (identity.mode=file). When

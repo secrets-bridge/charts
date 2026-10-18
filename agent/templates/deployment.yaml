@@ -12,6 +12,15 @@ metadata:
 spec:
   replicas: {{ .Values.replicaCount }}
   revisionHistoryLimit: 3
+  {{- if .Values.strategy }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  {{- else if include "secrets-bridge-agent.fileMode" . }}
+  # The identity PVC is ReadWriteOnce: stop the old pod before starting the
+  # new one, or a RollingUpdate surge pod waits on the volume forever.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "secrets-bridge-agent.selectorLabels" . | nindent 6 }}
@@ -132,6 +141,10 @@ spec:
             {{- end }}
             - name: SB_IDENTITY_FILE
               value: {{ include "secrets-bridge-agent.identityFilePath" . | quote }}
+            {{- if .Values.identity.privateKeyFileName }}
+            - name: SB_AGENT_PRIVATE_KEY_FILE
+              value: {{ include "secrets-bridge-agent.privateKeyFilePath" . | quote }}
+            {{- end }}
             {{- with .Values.agent.name }}
             - name: SB_AGENT_NAME
               value: {{ . | quote }}

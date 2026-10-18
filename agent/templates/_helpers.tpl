@@ -73,6 +73,11 @@ true
 {{- printf "%s/%s" (trimSuffix "/" .Values.identity.mountPath) .Values.identity.fileName -}}
 {{- end -}}
 
+{{/* FILE-mode wire-envelope private key path, on the identity volume. */}}
+{{- define "secrets-bridge-agent.privateKeyFilePath" -}}
+{{- printf "%s/%s" (trimSuffix "/" .Values.identity.mountPath) .Values.identity.privateKeyFileName -}}
+{{- end -}}
+
 {{/*
 Image reference, fully qualified. Prefers an immutable digest pin
 (`image.digest`, a `sha256:...` value) over the mutable `image.tag`;

@@ -60,6 +60,14 @@ clusterName: ""
 
 replicaCount: 1
 
+# Deployment update strategy. Empty (default) = automatic: Recreate in FILE
+# mode, the Kubernetes default (RollingUpdate) otherwise. The identity volume
+# is ReadWriteOnce, so a RollingUpdate surge pod can't attach it while the old
+# pod still holds it, and the old pod isn't stopped until the new one is
+# Ready: every rollout (chart upgrade, Reloader restart) hangs. Set this only
+# to override, e.g. with a ReadWriteMany existingClaim.
+strategy: {}
+
 serviceAccount:
   create: true
   name: ""
@@ -210,6 +218,15 @@ identity:
   # token is spent exactly once).
   mountPath: /var/lib/secrets-bridge-agent
   fileName: identity.json
+
+  # FILE mode only: the agent's X25519 wire-envelope private key, kept on the
+  # same volume (SB_AGENT_PRIVATE_KEY_FILE=<mountPath>/<privateKeyFileName>).
+  # The agent generates it on first boot (mode 0600, never overwritten) and
+  # reuses it on restart, so the public key it registers with the CP stays
+  # stable and sealed wraps not yet consumed survive a pod restart. Set to ""
+  # to fall back to an ephemeral per-boot keypair. Must differ from fileName.
+  # (Static mode: put SB_AGENT_PRIVATE_KEY[_FILE] in the identity Secret.)
+  privateKeyFileName: agent.key
 
   # Persistence for FILE mode. MUST be a PVC (chart-created) or a BYO claim.
   # A Kubernetes Secret can NOT back this (the agent persists a FILE and must

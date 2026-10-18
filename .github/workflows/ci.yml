@@ -153,6 +153,27 @@ jobs:
             -ignore-missing-schemas \
             out/agent.yaml
 
+      - name: Render + validate agent (enrollment / file-mode preset)
+        run: |
+          helm template ci-agent-enroll agent/ \
+            --namespace secrets-bridge \
+            --set clusterName=ci-cluster \
+            --set cp.endpoint=https://sb.example.com \
+            --set image.tag=0.1.0 \
+            --set identity.mode=file \
+            --set identity.persistence.enabled=true \
+            --set enrollment.enabled=true \
+            --set enrollment.tokenSecretName=sb-agent-enroll \
+            --set providers.awsSecretsManager.enabled=true \
+            --set providers.awsSecretsManager.region=us-east-1 \
+            > out/agent-enroll.yaml
+          kubeconform -strict -summary -skip CustomResourceDefinition \
+            -ignore-missing-schemas \
+            out/agent-enroll.yaml
+          # File mode: Recreate (RWO identity PVC) + persistent keypair on the volume.
+          grep -q 'type: Recreate' out/agent-enroll.yaml
+          grep -A1 'name: SB_AGENT_PRIVATE_KEY_FILE' out/agent-enroll.yaml | grep -q '/var/lib/secrets-bridge-agent/agent.key'
+
       - name: Render + validate agent (private-CA TLS preset)
         run: |
           helm template ci-agent-ca agent/ \
@@ -191,6 +212,11 @@ jobs:
         --set worker.image.tag=0.1.0 --set controller.image.tag=0.1.0
       AGENT: --set clusterName=ci --set cp.endpoint=https://x.example.com
       DIGEST: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+      # A valid enrollment (file-mode) agent, pinned.
+      ENROLL: >-
+        --set image.tag=0.1.0 --set identity.mode=file
+        --set identity.persistence.enabled=true --set enrollment.enabled=true
+        --set enrollment.tokenSecretName=sb-agent-enroll
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -333,6 +359,21 @@ jobs:
             --set providers.vault.enabled=true --set providers.vault.addr=https://vault.example.com \
             --set providers.vault.kubernetesRole=sb-agent \
             --set serviceAccount.automountServiceAccountToken=false
+
+      # File mode keeps the wire-envelope key next to the credential.
+      - name: agent privateKeyFileName equal to identity.fileName must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'must differ from identity.fileName' agent/ \
+            $AGENT $ENROLL --set identity.privateKeyFileName=identity.json
+
+      - name: agent privateKeyFileName with a path must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'must be a bare file name' agent/ \
+            $AGENT $ENROLL --set identity.privateKeyFileName=keys/agent.key
+
+      - name: agent file mode with privateKeyFileName empty (ephemeral key) must be accepted
+        run: |
+          .github/scripts/expect-render.sh accept agent/ $AGENT $ENROLL --set identity.privateKeyFileName=
 
   release-name:
     name: release-name truncation
