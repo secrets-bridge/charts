@@ -189,12 +189,29 @@ readiness.
 {{- if not $os.bucket -}}
 {{- fail "secrets-bridge: objectStore.enabled=true requires objectStore.bucket. Set it to the bucket that holds media (logos), or set objectStore.enabled=false until one exists." -}}
 {{- end -}}
+{{- if not $os.region -}}
+{{- fail "secrets-bridge: objectStore.enabled=true requires objectStore.region (the api refuses to boot without SB_OBJECTSTORE_REGION when a bucket is set). Set it, e.g. us-east-1; S3-compatible servers usually accept any value." -}}
+{{- end -}}
 {{- $sse := toString (default "" $os.sse) -}}
 {{- if not (has $sse (list "" "AES256" "aws:kms")) -}}
 {{- fail (printf "secrets-bridge: objectStore.sse=%q is not recognised (allowed: AES256, aws:kms, or empty for the bucket default; values are case-sensitive)" $sse) -}}
 {{- end -}}
 {{- if and (eq $sse "aws:kms") (not $os.kmsKeyId) -}}
 {{- fail "secrets-bridge: objectStore.sse=\"aws:kms\" requires objectStore.kmsKeyId (CMK ARN, key id or alias/<name>). Set it, or use sse=AES256 for SSE-S3." -}}
+{{- end -}}
+{{- if and $os.kmsKeyId (ne $sse "aws:kms") -}}
+{{- fail (printf "secrets-bridge: objectStore.kmsKeyId is set but objectStore.sse=%q. The api only accepts a KMS key with sse=aws:kms and refuses to boot otherwise. Set sse=aws:kms, or clear kmsKeyId." $sse) -}}
+{{- end -}}
+{{- $prefix := trimAll "/" (toString (default "" $os.prefix)) -}}
+{{- if $prefix -}}
+{{- range (splitList "/" $prefix) -}}
+{{- if or (eq . "") (eq . ".") (eq . "..") -}}
+{{- fail (printf "secrets-bridge: objectStore.prefix=%q has an empty, . or .. segment, which the api refuses. Use plain path segments, e.g. secrets-bridge or installs/prod." $os.prefix) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not (has (toString $os.logoBackfill) (list "true" "false")) -}}
+{{- fail (printf "secrets-bridge: objectStore.logoBackfill=%q must be true or false." (toString $os.logoBackfill)) -}}
 {{- end -}}
 {{- $endpoint := toString (default "" $os.endpoint) -}}
 {{- if $endpoint -}}

@@ -113,18 +113,25 @@ kms:
 # media only. Read by the api only; the worker doesn't touch media.
 #
 # Off by default so an existing install keeps rendering until it has a
-# bucket. Turn it on before upgrading to an api release that stores
-# media in object storage. Setting the SB_OBJECTSTORE_* keys in
+# bucket. With object storage not configured the api still boots, but
+# logo uploads and deletes answer 503 "logo storage is not configured"
+# (logos still stored in Postgres keep being served, and the boot log
+# warns with their count). Setting the SB_OBJECTSTORE_* keys in
 # `secrets.existingSecret` instead works too; the chart then renders
 # nothing for them and runs none of the checks below.
 #
+# When it is configured, the api checks the bucket with HeadBucket at
+# boot and refuses to start if the settings are invalid or the bucket
+# can't be reached within 15s.
+#
 # Credentials: the standard AWS SDK chain, never chart values.
 #   - AWS S3: IRSA. Put the role ARN in `api.serviceAccount.annotations`
-#     (eks.amazonaws.com/role-arn). The role needs s3:PutObject,
-#     s3:GetObject, s3:DeleteObject on arn:aws:s3:::<bucket>/<prefix>/*
-#     (s3:ListBucket on the bucket for HEAD on a missing key to return
-#     404), plus kms:GenerateDataKey / kms:Decrypt on `kmsKeyId` when
-#     sse=aws:kms.
+#     (eks.amazonaws.com/role-arn). The role needs s3:ListBucket on
+#     arn:aws:s3:::<bucket> with no s3:prefix condition (HeadBucket at
+#     boot is authorized by s3:ListBucket and sends no prefix, so a
+#     prefix condition denies it), s3:GetObject, s3:PutObject and
+#     s3:DeleteObject on arn:aws:s3:::<bucket>/<prefix>/*, plus
+#     kms:GenerateDataKey / kms:Decrypt on `kmsKeyId` when sse=aws:kms.
 #   - S3-compatible servers (MinIO, ...): `credentials.existingSecret`.
 objectStore:
   # Render the SB_OBJECTSTORE_* env vars on the api. When true,
@@ -132,8 +139,9 @@ objectStore:
   enabled: false
   # SB_OBJECTSTORE_BUCKET. Bucket name, e.g. example-bucket.
   bucket: ""
-  # SB_OBJECTSTORE_REGION. e.g. us-east-1. S3-compatible servers usually
-  # accept any value; MinIO defaults to us-east-1.
+  # SB_OBJECTSTORE_REGION. Required when enabled, e.g. us-east-1.
+  # S3-compatible servers usually accept any value; MinIO defaults to
+  # us-east-1.
   region: ""
   # SB_OBJECTSTORE_ENDPOINT. Empty for AWS S3. Set it for an
   # S3-compatible server or an S3 interface VPC endpoint, as a full URL:
@@ -141,10 +149,14 @@ objectStore:
   # is refused under env=production.
   endpoint: ""
   # SB_OBJECTSTORE_PREFIX. Key prefix inside the bucket, so several
-  # installs can share one bucket. e.g. secrets-bridge.
+  # installs can share one bucket. e.g. secrets-bridge. The api trims
+  # slashes at either end; empty, . or .. segments are refused. Logos
+  # live at <prefix>/logos/<kind>/<entity-id>/<sha256>.png, where
+  # <kind> is project or team.
   prefix: ""
   # SB_OBJECTSTORE_SSE. Server-side encryption requested on every write:
-  #   AES256   SSE-S3 (default)
+  #   AES256   SSE-S3 (the chart's default; the api's own default,
+  #            with the variable unset, is no SSE header)
   #   aws:kms  SSE-KMS with `kmsKeyId` (required)
   #   ""       send no SSE header; the bucket's default encryption
   #            applies. Use this for a MinIO without a KMS configured,
@@ -152,12 +164,31 @@ objectStore:
   # Exact, case-sensitive.
   sse: AES256
   # SB_OBJECTSTORE_KMS_KEY_ID. CMK ARN, key id or alias/<name>. Required
-  # when sse=aws:kms, ignored otherwise.
+  # when sse=aws:kms and refused with any other sse, as the api does.
   kmsKeyId: ""
   # SB_OBJECTSTORE_FORCE_PATH_STYLE. Path-style addressing
   # (<endpoint>/<bucket>/<key>). Most S3-compatible servers, MinIO
   # included, need true. Leave false for AWS S3.
   forcePathStyle: false
+  # SB_OBJECTSTORE_LOGO_BACKFILL ("true" or "false", always rendered when
+  # enabled). When true, the api copies logos still stored in Postgres
+  # to the bucket at start and clears their bytes. It runs in the
+  # background on one replica at a time (Redis lock), is idempotent, and
+  # also picks up rows that old replicas wrote during a rollout.
+  #
+  # Upgrading a multi-replica install from an api version that stored
+  # logos in Postgres takes two steps:
+  #   1. Deploy the new version with logoBackfill: false. Migration 0040
+  #      runs; old replicas keep reading and writing Postgres while new
+  #      replicas write to the bucket.
+  #   2. Once every replica runs the new version, set logoBackfill: true
+  #      (or drop the override) and let the pods restart. Check the
+  #      "logo backfill done" log line, or that
+  #      SELECT count(*) FROM project_logos WHERE png IS NOT NULL
+  #      (and the same for team_logos) returns 0.
+  # A single replica, or an install that can live with a short window
+  # where an old replica serves an empty image, can skip step 1.
+  logoBackfill: true
   # Static credentials for S3-compatible servers, read from a Secret you
   # create (never from values). When `existingSecret` is set, the api
   # gets AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY through

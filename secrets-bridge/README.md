@@ -73,23 +73,28 @@ For `aws-kms`, the api **also** needs IRSA — annotate the api ServiceAccount w
 
 The api keeps images and media (project and team logos today, any later upload) in S3-compatible object storage, and Postgres keeps only the metadata. The bucket stays private: the api streams objects back through its own routes, so the existing authorization applies. Secret values never go to object storage. The worker doesn't read media, so only the api gets these settings.
 
-`objectStore.enabled` defaults to `false`, so an existing install keeps rendering until it has a bucket. Turn it on before you upgrade to an api release that stores media in object storage. When it's on, the chart maps the values to env vars on the api:
+`objectStore.enabled` defaults to `false`, so an existing install keeps rendering until it has a bucket. Without object storage the api still boots, but logo uploads and deletes answer `503 logo storage is not configured`. Logos already stored in Postgres keep being served, and the boot log warns with their count. With object storage configured, the api runs `HeadBucket` at boot and refuses to start if a setting is invalid or the bucket can't be reached within 15 seconds.
+
+When `objectStore.enabled` is on, the chart maps the values to env vars on the api:
 
 | Value | Env var | Notes |
 |---|---|---|
 | `objectStore.bucket` | `SB_OBJECTSTORE_BUCKET` | Required when enabled. |
-| `objectStore.region` | `SB_OBJECTSTORE_REGION` | e.g. `us-east-1`. |
+| `objectStore.region` | `SB_OBJECTSTORE_REGION` | Required when enabled, e.g. `us-east-1`. |
 | `objectStore.endpoint` | `SB_OBJECTSTORE_ENDPOINT` | Empty for AWS S3. A full URL (`https://s3.example.com:9000`) for an S3-compatible server or a VPC endpoint. |
-| `objectStore.prefix` | `SB_OBJECTSTORE_PREFIX` | Key prefix, so several installs can share a bucket. |
-| `objectStore.sse` | `SB_OBJECTSTORE_SSE` | `AES256` (default, SSE-S3), `aws:kms` (SSE-KMS), or `""` to send no SSE header and rely on the bucket default. |
-| `objectStore.kmsKeyId` | `SB_OBJECTSTORE_KMS_KEY_ID` | Required when `sse=aws:kms`. |
-| `objectStore.forcePathStyle` | `SB_OBJECTSTORE_FORCE_PATH_STYLE` | `true` for MinIO and most S3-compatible servers. |
+| `objectStore.prefix` | `SB_OBJECTSTORE_PREFIX` | Key prefix, so several installs can share a bucket. Slashes at either end are trimmed; empty, `.` or `..` segments are refused. |
+| `objectStore.sse` | `SB_OBJECTSTORE_SSE` | `AES256` (chart default, SSE-S3), `aws:kms` (SSE-KMS), or `""` to send no SSE header and rely on the bucket default. The api's own default, with the variable unset, is no header. |
+| `objectStore.kmsKeyId` | `SB_OBJECTSTORE_KMS_KEY_ID` | Required when `sse=aws:kms`, refused with any other `sse`. |
+| `objectStore.forcePathStyle` | `SB_OBJECTSTORE_FORCE_PATH_STYLE` | `"true"` or `"false"`, always rendered. `true` for MinIO and most S3-compatible servers. |
+| `objectStore.logoBackfill` | `SB_OBJECTSTORE_LOGO_BACKFILL` | `"true"` (default) or `"false"`, always rendered. Moves logos still stored in Postgres to the bucket at api start. See "Upgrading from logos in Postgres". |
+
+Logos are stored at `<prefix>/logos/<kind>/<entity-id>/<sha256>.png`, where `<kind>` is `project` or `team`.
 
 You can also leave `objectStore.enabled=false` and put the `SB_OBJECTSTORE_*` keys in `secrets.existingSecret`. The chart then renders nothing for them and skips its checks.
 
 Credentials never go in values. The api uses the standard AWS SDK chain:
 
-- On AWS S3, use IRSA. Annotate the api ServiceAccount (`api.serviceAccount.annotations`) with a role that has `s3:PutObject`, `s3:GetObject` and `s3:DeleteObject` on `arn:aws:s3:::<bucket>/<prefix>/*`, `s3:ListBucket` on the bucket (so a HEAD on a missing key returns 404 instead of 403), and `kms:GenerateDataKey` / `kms:Decrypt` on `kmsKeyId` for SSE-KMS. With `kms.backend=aws-kms` it's the same role.
+- On AWS S3, use IRSA. Annotate the api ServiceAccount (`api.serviceAccount.annotations`) with a role that has `s3:ListBucket` on `arn:aws:s3:::<bucket>`, `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on `arn:aws:s3:::<bucket>/<prefix>/*`, and `kms:GenerateDataKey` / `kms:Decrypt` on `kmsKeyId` for SSE-KMS. Don't put an `s3:prefix` condition on `s3:ListBucket`: the boot check is a `HeadBucket` call, which S3 authorizes with `s3:ListBucket` and which sends no prefix, so the condition would deny it and the api would refuse to boot. With `kms.backend=aws-kms` it's the same role.
 - For an S3-compatible server, create a Secret with the access key pair and set `objectStore.credentials.existingSecret`. The chart wires `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` from it through `secretKeyRef` (key names in `credentials.accessKeyIdKey` / `credentials.secretAccessKeyKey`). This can't be combined with `kms.backend=aws-kms`, because the SDK prefers those variables over IRSA and the KMS client would sign with them.
 
 ```yaml
@@ -119,6 +124,17 @@ objectStore:
   credentials:
     existingSecret: sb-objectstore-creds
 ```
+
+### Upgrading from logos in Postgres
+
+Earlier api versions stored logos in Postgres. The api's migration 0040 adds `object_key` and `byte_length` and makes `png` nullable, and the backfill (`objectStore.logoBackfill`) copies existing logos to the bucket at start. It runs in the background on one replica at a time under a Redis lock, is idempotent, and also picks up rows that old replicas write during the rollout. Boot doesn't wait for it: logos still in Postgres are served until they move.
+
+With more than one api replica, upgrade in two steps:
+
+1. Deploy the new api with object storage configured and `objectStore.logoBackfill: false`. Old replicas keep reading and writing Postgres, and new replicas write new logos to the bucket and serve both kinds. Until the rollout finishes, an old replica serves an empty image for a logo uploaded through a new replica.
+2. Once every replica runs the new version, set `objectStore.logoBackfill: true` (the default) and upgrade again; the env change restarts the pods. Check the `logo backfill done` log line, or that `SELECT count(*) FROM project_logos WHERE png IS NOT NULL` and the same query on `team_logos` both return 0.
+
+With a single replica, or when that short window doesn't matter, deploy with the default and skip step 1.
 
 ## OIDC + auth (Slices A1 → E)
 
@@ -166,8 +182,12 @@ api:
 | `env=production` AND an enabled component has no `image.digest` and its tag isn't pinned (`X.Y.Z`, `vX.Y.Z`, optional `-prerelease`, or `sha-<hex>`; a chart dev version `X.Y.Z-dev.<sha>` doesn't count) | Errors out (CHT-03 / M11, CHT-N-02); see "Image pinning" below. |
 | `<component>.image.digest` set to anything but a bare `sha256:<64 hex>` | Errors out in every `env`. |
 | `objectStore.enabled=true` with an empty `objectStore.bucket` | Errors out. |
+| `objectStore.enabled=true` with an empty `objectStore.region` | Errors out. |
 | `objectStore.sse` not exactly `AES256`, `aws:kms` or empty | Errors out (case-sensitive). |
 | `objectStore.sse=aws:kms` with an empty `objectStore.kmsKeyId` | Errors out. |
+| `objectStore.kmsKeyId` with any `objectStore.sse` other than `aws:kms` | Errors out (the api would refuse to boot). |
+| `objectStore.prefix` with an empty, `.` or `..` segment | Errors out. |
+| `objectStore.logoBackfill` not `true` or `false` | Errors out. |
 | `objectStore.endpoint` that isn't `http(s)://host[:port]` | Errors out. |
 | `objectStore.endpoint` with plain `http://` under `env=production` | Errors out. Plain HTTP is fine under `env=dev` (local MinIO). |
 | `objectStore.credentials.existingSecret` with `kms.backend=aws-kms` | Errors out: the static keys would take over the KMS client's credentials. |
@@ -257,10 +277,11 @@ With `objectStore.enabled=true` the api policy also allows TCP egress to the obj
 | `api.autoscaling.enabled` | `false` | HPA opt-in. |
 | `api.serviceAccount.annotations` | `{}` | IRSA role ARN goes here (KMS and S3). |
 | `objectStore.enabled` | `false` | Object storage for media. `bucket` is required when `true`. |
-| `objectStore.bucket` / `region` / `endpoint` / `prefix` | `""` | `SB_OBJECTSTORE_*` on the api. |
+| `objectStore.bucket` / `region` / `endpoint` / `prefix` | `""` | `SB_OBJECTSTORE_*` on the api. `bucket` and `region` are required when enabled. |
 | `objectStore.sse` / `kmsKeyId` | `AES256` / `""` | `aws:kms` needs `kmsKeyId`. |
 | `objectStore.forcePathStyle` | `false` | `true` for MinIO. |
-| `objectStore.credentials.existingSecret` | `""` | Static keys for S3-compatible servers. Not with `kms.backend=aws-kms`. |
+| `objectStore.logoBackfill` | `true` | Move logos still in Postgres to the bucket at api start. `false` for step 1 of a multi-replica upgrade. |
+| `objectStore.credentials.existingSecret` / `accessKeyIdKey` / `secretAccessKeyKey` | `""` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Static keys for S3-compatible servers. Not with `kms.backend=aws-kms`. |
 | `api.networkPolicy.egress.objectStore.enabled` / `.to` | `true` / `[]` | Egress to the object store when `objectStore.enabled`. |
 | `ui.replicaCount` | `2` | |
 | `ingress.enabled` | `true` | |

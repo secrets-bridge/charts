@@ -50,6 +50,17 @@ annotations:
   artifacthub.io/changes: |
     - kind: added
       description: |
+        api: objectStore.logoBackfill (default true) renders
+        SB_OBJECTSTORE_LOGO_BACKFILL on the api, for the two-step upgrade
+        from logos stored in Postgres. New render-time guards match the
+        api's boot checks: objectStore.region is required when enabled,
+        kmsKeyId is refused with any sse other than aws:kms, prefix
+        segments can't be empty, . or .., and logoBackfill must be true
+        or false. The documented IAM policy now grants s3:ListBucket on
+        the bucket without an s3:prefix condition, since the api's boot
+        check is HeadBucket.
+    - kind: added
+      description: |
         api: object storage settings for media (objectStore.*: bucket,
         region, endpoint, prefix, sse, kmsKeyId, forcePathStyle), mapped
         to SB_OBJECTSTORE_* on the api. Credentials come from IRSA on the

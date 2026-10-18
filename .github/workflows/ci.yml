@@ -169,6 +169,8 @@ jobs:
           grep -A1 'name: SB_OBJECTSTORE_SSE' $f | grep -q '"aws:kms"'
           grep -A1 'name: SB_OBJECTSTORE_KMS_KEY_ID' $f | grep -q '"alias/sb-media"'
           grep -A1 'name: SB_OBJECTSTORE_FORCE_PATH_STYLE' $f | grep -q '"false"'
+          # api#255: the logo backfill is on by default.
+          grep -A1 'name: SB_OBJECTSTORE_LOGO_BACKFILL' $f | grep -q '"true"'
           # IRSA only: no endpoint, no static keys.
           if grep -q 'SB_OBJECTSTORE_ENDPOINT' $f; then exit 1; fi
           if grep -q 'name: AWS_ACCESS_KEY_ID' $f; then exit 1; fi
@@ -179,14 +181,22 @@ jobs:
             --set ui.image.tag=0.1.0 --set worker.image.tag=0.1.0 \
             --set controller.image.tag=0.1.0 \
             --set objectStore.enabled=true --set objectStore.bucket=example-bucket \
+            --set objectStore.region=us-east-1 \
             --show-only templates/api/networkpolicy.yaml \
             | grep -B1 -A1 'port: 443' | grep -q 'protocol: TCP'
           # The worker doesn't read media, so it gets no object store env.
           helm template ci-s3 secrets-bridge/ --namespace secrets-bridge \
             --set env=dev --set kms.backend=local --set ingress.host=sb.example.com \
             --set objectStore.enabled=true --set objectStore.bucket=example-bucket \
+            --set objectStore.region=us-east-1 \
             --show-only templates/worker/deployment.yaml > out/s3-worker.yaml
           if grep -q 'SB_OBJECTSTORE' out/s3-worker.yaml; then exit 1; fi
+          # With the store off (the default) the api gets no object store
+          # env at all, the backfill flag included.
+          helm template ci-s3 secrets-bridge/ --namespace secrets-bridge \
+            --set env=dev --set kms.backend=local --set ingress.host=sb.example.com \
+            --show-only templates/api/deployment.yaml > out/s3-off-api.yaml
+          if grep -q 'SB_OBJECTSTORE' out/s3-off-api.yaml; then exit 1; fi
 
       - name: Render + validate secrets-bridge (object store, MinIO preset)
         # charts#39: an S3-compatible server with path-style addressing,
@@ -206,6 +216,7 @@ jobs:
             --set objectStore.forcePathStyle=true \
             --set objectStore.sse= \
             --set objectStore.credentials.existingSecret=sb-objectstore-creds \
+            --set objectStore.logoBackfill=false \
             --set 'api.networkPolicy.egress.objectStore.to[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=minio' \
             > out/secrets-bridge-minio.yaml
           kubeconform -strict -summary -skip CustomResourceDefinition \
@@ -217,6 +228,8 @@ jobs:
           grep -A4 'name: AWS_ACCESS_KEY_ID' $f | grep -q 'name: "sb-objectstore-creds"'
           grep -A4 'name: AWS_SECRET_ACCESS_KEY' $f | grep -q 'key: "AWS_SECRET_ACCESS_KEY"'
           if grep -q 'SB_OBJECTSTORE_SSE' $f; then exit 1; fi
+          # Step 1 of the two-step upgrade (api#255): backfill switched off.
+          grep -A1 'name: SB_OBJECTSTORE_LOGO_BACKFILL' $f | grep -q '"false"'
           grep -A6 'port: 9000' $f | grep -q 'kubernetes.io/metadata.name: minio'
 
       - name: Render + validate agent (full preset with NetworkPolicy)
@@ -413,6 +426,26 @@ jobs:
           .github/scripts/expect-render.sh reject 'objectStore.enabled=true requires objectStore.bucket' secrets-bridge/ \
             $PROD $PINNED --set objectStore.enabled=true
 
+      - name: objectStore enabled without a region must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'objectStore.enabled=true requires objectStore.region' secrets-bridge/ \
+            $PROD $PINNED --set objectStore.enabled=true --set objectStore.bucket=example-bucket
+
+      - name: objectStore kmsKeyId without sse=aws:kms must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'objectStore.kmsKeyId is set but objectStore.sse="AES256"' secrets-bridge/ \
+            $PROD $PINNED $OBJSTORE --set objectStore.kmsKeyId=alias/sb-media
+
+      - name: objectStore prefix with a .. segment must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'objectStore.prefix="a/../b" has an empty, . or .. segment' secrets-bridge/ \
+            $PROD $PINNED $OBJSTORE --set objectStore.prefix=a/../b
+
+      - name: objectStore logoBackfill that isn't true or false must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'objectStore.logoBackfill="maybe" must be true or false' secrets-bridge/ \
+            $PROD $PINNED $OBJSTORE --set objectStore.logoBackfill=maybe
+
       - name: objectStore sse=aws:kms without kmsKeyId must be rejected
         run: |
           .github/scripts/expect-render.sh reject 'objectStore.sse="aws:kms" requires objectStore.kmsKeyId' secrets-bridge/ \
@@ -453,6 +486,10 @@ jobs:
           .github/scripts/expect-render.sh accept secrets-bridge/ $OBJSTORE \
             --set env=dev --set kms.backend=local --set ingress.host=x.example.com \
             --set objectStore.endpoint=http://s3.example.com:9000
+          # Backfill off as a string (step 1 of the upgrade), slashes
+          # around the prefix trimmed by the api.
+          .github/scripts/expect-render.sh accept secrets-bridge/ $PROD $PINNED $OBJSTORE \
+            --set-string objectStore.logoBackfill=false --set objectStore.prefix=/secrets-bridge/
           # Disabled (the default) ignores every other objectStore value.
           .github/scripts/expect-render.sh accept secrets-bridge/ $PROD $PINNED \
             --set objectStore.sse=aes256 --set objectStore.endpoint=http://s3.example.com
