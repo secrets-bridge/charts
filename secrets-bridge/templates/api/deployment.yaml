@@ -192,6 +192,55 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- end }}
+            {{- /*
+              Object storage for media (charts#39, api#252). Rendered
+              only when objectStore.enabled, so an install without a
+              bucket is unchanged. Credentials come from the SDK chain:
+              IRSA through api.serviceAccount.annotations, or the
+              optional static keys below for S3-compatible servers.
+            */}}
+            {{- with .Values.objectStore }}
+            {{- if .enabled }}
+            - name: SB_OBJECTSTORE_BUCKET
+              value: {{ .bucket | quote }}
+            {{- with .region }}
+            - name: SB_OBJECTSTORE_REGION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .endpoint }}
+            - name: SB_OBJECTSTORE_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .prefix }}
+            - name: SB_OBJECTSTORE_PREFIX
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .sse }}
+            - name: SB_OBJECTSTORE_SSE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if and (eq (toString .sse) "aws:kms") .kmsKeyId }}
+            - name: SB_OBJECTSTORE_KMS_KEY_ID
+              value: {{ .kmsKeyId | quote }}
+            {{- end }}
+            - name: SB_OBJECTSTORE_FORCE_PATH_STYLE
+              value: {{ ternary "true" "false" (eq (toString .forcePathStyle) "true") | quote }}
+            {{- with .credentials }}
+            {{- if .existingSecret }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret | quote }}
+                  key: {{ .accessKeyIdKey | quote }}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret | quote }}
+                  key: {{ .secretAccessKeyKey | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
           {{- if .Values.secrets.existingSecret }}
           envFrom:
             - secretRef:

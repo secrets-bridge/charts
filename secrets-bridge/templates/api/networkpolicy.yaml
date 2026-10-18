@@ -35,6 +35,18 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
+    {{- if and .Values.objectStore.enabled .Values.api.networkPolicy.egress.objectStore.enabled }}
+    # Object store (objectStore.*). S3's addresses aren't fixed, so with
+    # no `to` peers this allows the port to any destination; narrow it
+    # with api.networkPolicy.egress.objectStore.to.
+    - ports:
+        - port: {{ include "secrets-bridge.objectStorePort" . }}
+          protocol: TCP
+      {{- with .Values.api.networkPolicy.egress.objectStore.to }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
     # Postgres / Redis / KMS / OIDC / any other operator-specific
     # destination — see `api.networkPolicy.egress.extraRules` in
     # values.yaml for examples.

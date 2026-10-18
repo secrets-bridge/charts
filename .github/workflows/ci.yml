@@ -138,6 +138,87 @@ jobs:
             -ignore-missing-schemas \
             out/secrets-bridge-vault.yaml
 
+      - name: Render + validate secrets-bridge (object store, AWS S3 with IRSA preset)
+        # charts#39: AWS S3 with SSE-KMS, credentials from the api's IRSA
+        # role. No endpoint, so the egress rule is 443 to any destination.
+        run: |
+          helm template ci-s3 secrets-bridge/ \
+            --namespace secrets-bridge \
+            --set env=production \
+            --set kms.backend=aws-kms \
+            --set kms.awsKms.region=us-east-1 \
+            --set kms.awsKms.keyId=alias/sb-wrap \
+            --set 'api.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::123456789012:role/sb-api' \
+            --set ingress.host=sb.example.com \
+            --set objectStore.enabled=true \
+            --set objectStore.bucket=example-bucket \
+            --set objectStore.region=us-east-1 \
+            --set objectStore.prefix=secrets-bridge \
+            --set objectStore.sse=aws:kms \
+            --set objectStore.kmsKeyId=alias/sb-media \
+            --set api.image.tag=0.1.0 \
+            --set ui.image.tag=0.1.0 \
+            --set worker.image.tag=0.1.0 \
+            --set controller.image.tag=0.1.0 \
+            > out/secrets-bridge-s3.yaml
+          kubeconform -strict -summary -skip CustomResourceDefinition \
+            -ignore-missing-schemas \
+            out/secrets-bridge-s3.yaml
+          f=out/secrets-bridge-s3.yaml
+          grep -A1 'name: SB_OBJECTSTORE_BUCKET' $f | grep -q '"example-bucket"'
+          grep -A1 'name: SB_OBJECTSTORE_SSE' $f | grep -q '"aws:kms"'
+          grep -A1 'name: SB_OBJECTSTORE_KMS_KEY_ID' $f | grep -q '"alias/sb-media"'
+          grep -A1 'name: SB_OBJECTSTORE_FORCE_PATH_STYLE' $f | grep -q '"false"'
+          # IRSA only: no endpoint, no static keys.
+          if grep -q 'SB_OBJECTSTORE_ENDPOINT' $f; then exit 1; fi
+          if grep -q 'name: AWS_ACCESS_KEY_ID' $f; then exit 1; fi
+          helm template ci-s3 secrets-bridge/ --namespace secrets-bridge \
+            --set env=production --set kms.backend=aws-kms \
+            --set kms.awsKms.region=us-east-1 --set kms.awsKms.keyId=alias/sb-wrap \
+            --set ingress.host=sb.example.com --set api.image.tag=0.1.0 \
+            --set ui.image.tag=0.1.0 --set worker.image.tag=0.1.0 \
+            --set controller.image.tag=0.1.0 \
+            --set objectStore.enabled=true --set objectStore.bucket=example-bucket \
+            --show-only templates/api/networkpolicy.yaml \
+            | grep -B1 -A1 'port: 443' | grep -q 'protocol: TCP'
+          # The worker doesn't read media, so it gets no object store env.
+          helm template ci-s3 secrets-bridge/ --namespace secrets-bridge \
+            --set env=dev --set kms.backend=local --set ingress.host=sb.example.com \
+            --set objectStore.enabled=true --set objectStore.bucket=example-bucket \
+            --show-only templates/worker/deployment.yaml > out/s3-worker.yaml
+          if grep -q 'SB_OBJECTSTORE' out/s3-worker.yaml; then exit 1; fi
+
+      - name: Render + validate secrets-bridge (object store, MinIO preset)
+        # charts#39: an S3-compatible server with path-style addressing,
+        # static keys from an existing Secret and no SSE header. Plain
+        # HTTP is only allowed under env=dev. The egress rule takes the
+        # endpoint's port and the in-cluster MinIO namespace.
+        run: |
+          helm template ci-minio secrets-bridge/ \
+            --namespace secrets-bridge \
+            --set env=dev \
+            --set kms.backend=local \
+            --set ingress.host=sb.example.com \
+            --set objectStore.enabled=true \
+            --set objectStore.bucket=example-bucket \
+            --set objectStore.region=us-east-1 \
+            --set objectStore.endpoint=http://s3.example.com:9000 \
+            --set objectStore.forcePathStyle=true \
+            --set objectStore.sse= \
+            --set objectStore.credentials.existingSecret=sb-objectstore-creds \
+            --set 'api.networkPolicy.egress.objectStore.to[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=minio' \
+            > out/secrets-bridge-minio.yaml
+          kubeconform -strict -summary -skip CustomResourceDefinition \
+            -ignore-missing-schemas \
+            out/secrets-bridge-minio.yaml
+          f=out/secrets-bridge-minio.yaml
+          grep -A1 'name: SB_OBJECTSTORE_ENDPOINT' $f | grep -q '"http://s3.example.com:9000"'
+          grep -A1 'name: SB_OBJECTSTORE_FORCE_PATH_STYLE' $f | grep -q '"true"'
+          grep -A4 'name: AWS_ACCESS_KEY_ID' $f | grep -q 'name: "sb-objectstore-creds"'
+          grep -A4 'name: AWS_SECRET_ACCESS_KEY' $f | grep -q 'key: "AWS_SECRET_ACCESS_KEY"'
+          if grep -q 'SB_OBJECTSTORE_SSE' $f; then exit 1; fi
+          grep -A6 'port: 9000' $f | grep -q 'kubernetes.io/metadata.name: minio'
+
       - name: Render + validate agent (full preset with NetworkPolicy)
         # The agent only renders a pinned image (CHT-N-01). This preset
         # exercises the digest path, the private-CA one a release tag.
@@ -224,6 +305,10 @@ jobs:
         --set api.image.tag=0.1.0 --set ui.image.tag=0.1.0
         --set worker.image.tag=0.1.0 --set controller.image.tag=0.1.0
       AGENT: --set clusterName=ci --set cp.endpoint=https://x.example.com
+      # A valid object store config (AWS S3, SSE-S3 by default).
+      OBJSTORE: >-
+        --set objectStore.enabled=true --set objectStore.bucket=example-bucket
+        --set objectStore.region=us-east-1
       DIGEST: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
       # A valid enrollment (file-mode) agent, pinned.
       ENROLL: >-
@@ -321,6 +406,56 @@ jobs:
         run: |
           .github/scripts/expect-render.sh accept secrets-bridge/ \
             --set env=dev --set kms.backend=local --set ingress.host=x.example.com
+
+      # charts#39: object storage for media.
+      - name: objectStore enabled without a bucket must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'objectStore.enabled=true requires objectStore.bucket' secrets-bridge/ \
+            $PROD $PINNED --set objectStore.enabled=true
+
+      - name: objectStore sse=aws:kms without kmsKeyId must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'objectStore.sse="aws:kms" requires objectStore.kmsKeyId' secrets-bridge/ \
+            $PROD $PINNED $OBJSTORE --set objectStore.sse=aws:kms
+
+      - name: objectStore sse with the wrong case (aes256) must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'objectStore.sse="aes256" is not recognised' secrets-bridge/ \
+            $PROD $PINNED $OBJSTORE --set objectStore.sse=aes256
+
+      - name: production + plain HTTP objectStore endpoint must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'objectStore.endpoint="http://s3.example.com:9000" is plain HTTP' secrets-bridge/ \
+            $PROD $PINNED $OBJSTORE --set objectStore.endpoint=http://s3.example.com:9000
+
+      - name: objectStore endpoint without a scheme must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'objectStore.endpoint="s3.example.com" is not a URL' secrets-bridge/ \
+            $PROD $PINNED $OBJSTORE --set objectStore.endpoint=s3.example.com
+
+      - name: objectStore static credentials with kms.backend=aws-kms must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'objectStore.credentials.existingSecret cannot be combined with kms.backend=aws-kms' secrets-bridge/ \
+            $PROD $PINNED $OBJSTORE --set objectStore.credentials.existingSecret=sb-objectstore-creds
+
+      - name: objectStore valid configs must be accepted
+        run: |
+          # AWS S3 with SSE-KMS, production.
+          .github/scripts/expect-render.sh accept secrets-bridge/ $PROD $PINNED $OBJSTORE \
+            --set objectStore.sse=aws:kms --set objectStore.kmsKeyId=alias/sb-media
+          # HTTPS S3-compatible endpoint with static keys, production + vault-transit.
+          .github/scripts/expect-render.sh accept secrets-bridge/ $PINNED $OBJSTORE \
+            --set env=production --set kms.backend=vault-transit --set kms.vaultTransit.key=sb-wrap \
+            --set ingress.host=x.example.com \
+            --set objectStore.endpoint=https://s3.example.com:9000 --set objectStore.forcePathStyle=true \
+            --set objectStore.sse= --set objectStore.credentials.existingSecret=sb-objectstore-creds
+          # Plain HTTP endpoint under env=dev.
+          .github/scripts/expect-render.sh accept secrets-bridge/ $OBJSTORE \
+            --set env=dev --set kms.backend=local --set ingress.host=x.example.com \
+            --set objectStore.endpoint=http://s3.example.com:9000
+          # Disabled (the default) ignores every other objectStore value.
+          .github/scripts/expect-render.sh accept secrets-bridge/ $PROD $PINNED \
+            --set objectStore.sse=aes256 --set objectStore.endpoint=http://s3.example.com
 
       - name: agent missing clusterName must be rejected
         run: |

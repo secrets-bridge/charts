@@ -122,3 +122,26 @@ Usage: {{ include "secrets-bridge.componentServiceAccountName" (dict "ctx" . "co
 {{- default "default" $spec.name -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+TCP port the api uses to reach the object store: the explicit port in
+objectStore.endpoint, else 443 for https and 80 for http. No endpoint
+means AWS S3 over HTTPS (443). The endpoint's shape is checked by
+secrets-bridge.validateObjectStore before this runs.
+*/}}
+{{- define "secrets-bridge.objectStorePort" -}}
+{{- $endpoint := toString (default "" .Values.objectStore.endpoint) -}}
+{{- if not $endpoint -}}
+443
+{{- else -}}
+{{- $u := urlParse $endpoint -}}
+{{- $port := regexFind "[0-9]+$" (regexFind ":[0-9]+$" $u.host) -}}
+{{- if $port -}}
+{{- $port -}}
+{{- else if eq $u.scheme "http" -}}
+80
+{{- else -}}
+443
+{{- end -}}
+{{- end -}}
+{{- end -}}
