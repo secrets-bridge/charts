@@ -1,6 +1,6 @@
 name: ci
 
-# Gates every chart change with four jobs:
+# Gates every chart change with these jobs:
 #
 #   1. lint          — `helm lint` for each chart
 #   2. template      — `helm template` under realistic presets and
@@ -10,7 +10,12 @@ name: ci
 #   3. safety-rails  — verifies the documented render-time `fail`
 #                      guards actually trip (otherwise the safety
 #                      story is theatre, not code)
-#   4. release-name  — sanity check that the chart names + per-component
+#   4. agent-file-mode-overrides — explicit strategy / fsGroupChangePolicy
+#                      values win over the agent's file-mode defaults
+#   5. agent-ssa-upgrade — on a kind cluster, the file-mode strategy applies
+#                      with server-side apply over a Deployment that carries
+#                      the defaulted rollingUpdate block (#37)
+#   6. release-name  — sanity check that the chart names + per-component
 #                      fullnames truncate cleanly to ≤63 chars under a
 #                      long release name (K8s label length limit)
 #
@@ -152,6 +157,9 @@ jobs:
           kubeconform -strict -summary -skip CustomResourceDefinition \
             -ignore-missing-schemas \
             out/agent.yaml
+          # Static mode keeps the Kubernetes defaults.
+          if grep -q 'strategy:' out/agent.yaml; then exit 1; fi
+          if grep -q 'fsGroupChangePolicy' out/agent.yaml; then exit 1; fi
 
       - name: Render + validate agent (enrollment / file-mode preset)
         run: |
@@ -170,8 +178,13 @@ jobs:
           kubeconform -strict -summary -skip CustomResourceDefinition \
             -ignore-missing-schemas \
             out/agent-enroll.yaml
-          # File mode: Recreate (RWO identity PVC) + persistent keypair on the volume.
-          grep -q 'type: Recreate' out/agent-enroll.yaml
+          # File mode: no surge pod (RWO identity PVC), and not type Recreate,
+          # which server-side apply can't switch an existing Deployment to (#37).
+          grep -A3 'type: RollingUpdate' out/agent-enroll.yaml | grep -q 'maxSurge: 0'
+          grep -A3 'type: RollingUpdate' out/agent-enroll.yaml | grep -q 'maxUnavailable: 100%'
+          if grep -q 'type: Recreate' out/agent-enroll.yaml; then exit 1; fi
+          # File mode: kubelet must not re-add group bits to the identity files.
+          grep -q 'fsGroupChangePolicy: OnRootMismatch' out/agent-enroll.yaml
           grep -A1 'name: SB_AGENT_PRIVATE_KEY_FILE' out/agent-enroll.yaml | grep -q '/var/lib/secrets-bridge-agent/agent.key'
 
       - name: Render + validate agent (private-CA TLS preset)
@@ -374,6 +387,88 @@ jobs:
       - name: agent file mode with privateKeyFileName empty (ephemeral key) must be accepted
         run: |
           .github/scripts/expect-render.sh accept agent/ $AGENT $ENROLL --set identity.privateKeyFileName=
+
+  agent-file-mode-overrides:
+    name: agent file-mode overrides
+    runs-on: ubuntu-latest
+    env:
+      ARGS: >-
+        --set clusterName=ci --set cp.endpoint=https://x.example.com
+        --set image.tag=0.1.0 --set identity.mode=file
+        --set identity.persistence.enabled=true --set enrollment.enabled=true
+        --set enrollment.tokenSecretName=sb-agent-enroll
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: explicit fsGroupChangePolicy wins over the file-mode default
+        run: |
+          out=$(helm template r agent/ $ARGS --set podSecurityContext.fsGroupChangePolicy=Always --show-only templates/deployment.yaml)
+          grep -q 'fsGroupChangePolicy: Always' <<<"$out"
+          if grep -q 'OnRootMismatch' <<<"$out"; then exit 1; fi
+
+      - name: no fsGroup, no fsGroupChangePolicy
+        run: |
+          out=$(helm template r agent/ $ARGS --set podSecurityContext.fsGroup=null --show-only templates/deployment.yaml)
+          if grep -q 'fsGroupChangePolicy' <<<"$out"; then exit 1; fi
+
+      - name: explicit strategy wins over the file-mode default
+        run: |
+          out=$(helm template r agent/ $ARGS --set strategy.type=Recreate --show-only templates/deployment.yaml)
+          grep -A1 'strategy:' <<<"$out" | grep -q 'type: Recreate'
+          if grep -q 'maxSurge' <<<"$out"; then exit 1; fi
+
+  agent-ssa-upgrade:
+    # #37: an agent Deployment created without a strategy carries the
+    # defaulted rollingUpdate block. Server-side apply (Argo CD
+    # ServerSideApply=true, Flux) doesn't remove fields it never owned, so
+    # the file-mode strategy must apply on top of it.
+    name: agent file-mode upgrade under server-side apply
+    runs-on: ubuntu-latest
+    env:
+      KIND_VERSION: v0.29.0
+      ARGS: >-
+        --namespace default
+        --set clusterName=ci --set cp.endpoint=https://x.example.com
+        --set image.tag=0.1.0 --set identity.mode=file
+        --set identity.persistence.enabled=true --set enrollment.enabled=true
+        --set enrollment.tokenSecretName=sb-agent-enroll
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Create kind cluster
+        run: |
+          curl -fsSLo kind https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64
+          curl -fsSL https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64.sha256sum \
+            | awk '{print $1"  kind"}' | sha256sum -c -
+          sudo install kind /usr/local/bin/kind
+          kind create cluster --wait 120s
+
+      - name: Create the Deployment the way a pre-#36 chart did (no strategy)
+        run: |
+          helm template r agent/ $ARGS --show-only templates/deployment.yaml \
+            | yq 'del(.spec.strategy)' > old.yaml
+          kubectl apply --server-side --field-manager=ci-sync -f old.yaml
+          kubectl get deploy r-secrets-bridge-agent -o jsonpath='{.spec.strategy}' | grep -q '"maxSurge":"25%"'
+
+      - name: Upgrade to the current chart with server-side apply
+        run: |
+          helm template r agent/ $ARGS --show-only templates/deployment.yaml > new.yaml
+          kubectl apply --server-side --force-conflicts --field-manager=ci-sync -f new.yaml
+          s=$(kubectl get deploy r-secrets-bridge-agent -o jsonpath='{.spec.strategy}')
+          echo "$s"
+          [ "$s" = '{"rollingUpdate":{"maxSurge":0,"maxUnavailable":"100%"},"type":"RollingUpdate"}' ]
 
   release-name:
     name: release-name truncation
