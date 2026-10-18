@@ -104,6 +104,72 @@ kms:
     # SB_KMS_AWS_ENDPOINT — optional (LocalStack / VPC endpoint).
     endpoint: ""
 
+# ── Object storage (media) ───────────────────────────────────────────
+#
+# S3-compatible object storage for images and media (project and team
+# logos today, any later upload). Postgres keeps only the metadata. The
+# bucket is private: the api streams objects back through its own
+# routes, so the existing authorization applies. Never secret values,
+# media only. Read by the api only; the worker doesn't touch media.
+#
+# Off by default so an existing install keeps rendering until it has a
+# bucket. Turn it on before upgrading to an api release that stores
+# media in object storage. Setting the SB_OBJECTSTORE_* keys in
+# `secrets.existingSecret` instead works too; the chart then renders
+# nothing for them and runs none of the checks below.
+#
+# Credentials: the standard AWS SDK chain, never chart values.
+#   - AWS S3: IRSA. Put the role ARN in `api.serviceAccount.annotations`
+#     (eks.amazonaws.com/role-arn). The role needs s3:PutObject,
+#     s3:GetObject, s3:DeleteObject on arn:aws:s3:::<bucket>/<prefix>/*
+#     (s3:ListBucket on the bucket for HEAD on a missing key to return
+#     404), plus kms:GenerateDataKey / kms:Decrypt on `kmsKeyId` when
+#     sse=aws:kms.
+#   - S3-compatible servers (MinIO, ...): `credentials.existingSecret`.
+objectStore:
+  # Render the SB_OBJECTSTORE_* env vars on the api. When true,
+  # `bucket` is required.
+  enabled: false
+  # SB_OBJECTSTORE_BUCKET. Bucket name, e.g. example-bucket.
+  bucket: ""
+  # SB_OBJECTSTORE_REGION. e.g. us-east-1. S3-compatible servers usually
+  # accept any value; MinIO defaults to us-east-1.
+  region: ""
+  # SB_OBJECTSTORE_ENDPOINT. Empty for AWS S3. Set it for an
+  # S3-compatible server or an S3 interface VPC endpoint, as a full URL:
+  # https://s3.example.com or https://s3.example.com:9000. Plain http://
+  # is refused under env=production.
+  endpoint: ""
+  # SB_OBJECTSTORE_PREFIX. Key prefix inside the bucket, so several
+  # installs can share one bucket. e.g. secrets-bridge.
+  prefix: ""
+  # SB_OBJECTSTORE_SSE. Server-side encryption requested on every write:
+  #   AES256   SSE-S3 (default)
+  #   aws:kms  SSE-KMS with `kmsKeyId` (required)
+  #   ""       send no SSE header; the bucket's default encryption
+  #            applies. Use this for a MinIO without a KMS configured,
+  #            which rejects SSE-S3 requests.
+  # Exact, case-sensitive.
+  sse: AES256
+  # SB_OBJECTSTORE_KMS_KEY_ID. CMK ARN, key id or alias/<name>. Required
+  # when sse=aws:kms, ignored otherwise.
+  kmsKeyId: ""
+  # SB_OBJECTSTORE_FORCE_PATH_STYLE. Path-style addressing
+  # (<endpoint>/<bucket>/<key>). Most S3-compatible servers, MinIO
+  # included, need true. Leave false for AWS S3.
+  forcePathStyle: false
+  # Static credentials for S3-compatible servers, read from a Secret you
+  # create (never from values). When `existingSecret` is set, the api
+  # gets AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY through
+  # secretKeyRef. Leave it empty on AWS and use IRSA instead. Not
+  # allowed with kms.backend=aws-kms: the SDK chain prefers these
+  # variables over IRSA, so the KMS client would sign with the object
+  # store's keys.
+  credentials:
+    existingSecret: ""
+    accessKeyIdKey: AWS_ACCESS_KEY_ID
+    secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+
 # ── api ──────────────────────────────────────────────────────────────
 
 api:
@@ -130,7 +196,9 @@ api:
   port: 8080
 
   # IRSA: when backend=aws-kms, set this to the role ARN that grants
-  # kms:Encrypt / Decrypt / GenerateDataKey on the configured CMK.
+  # kms:Encrypt / Decrypt / GenerateDataKey on the configured CMK. The
+  # same role carries the S3 permissions when objectStore.enabled=true
+  # (see the objectStore block above).
   serviceAccount:
     create: true
     name: ""
@@ -342,7 +410,8 @@ api:
     minAvailable: 1
 
   # CHT-01 / M9: default-deny NetworkPolicy. Only the ingress
-  # controller may reach :8080; egress is DNS-only until you add
+  # controller may reach :8080; egress is DNS (plus the object store
+  # when objectStore.enabled, see egress.objectStore) until you add
   # `extraRules` for Postgres / Redis / KMS / the OIDC issuer,
   # destinations the chart can't know in advance. Requires a
   # NetworkPolicy-enforcing CNI (Calico, Cilium, the AWS VPC CNI
@@ -375,6 +444,21 @@ api:
       # networkPolicy.allowCIDRs doc) if you'd rather not enumerate
       # AWS's / your IdP's IP ranges.
       extraRules: []
+      # Egress to the object store, rendered only when
+      # objectStore.enabled=true. The port comes from
+      # objectStore.endpoint: its explicit port, else 443 (https) or 80
+      # (http); 443 with no endpoint (AWS S3). With `to` empty the rule
+      # allows that port to any destination, since S3's addresses are
+      # neither fixed nor known to the chart (same trade-off as the
+      # controller's allowAPIServer). Narrow it with NetworkPolicyPeer
+      # entries, e.g. the S3 VPC endpoint subnet or an in-cluster MinIO:
+      #   to:
+      #     - ipBlock: { cidr: 10.0.30.0/24 }
+      #     - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: minio } }
+      # Set enabled=false to manage this egress in extraRules yourself.
+      objectStore:
+        enabled: true
+        to: []
 
   podAnnotations: {}
   podLabels: {}

@@ -48,6 +48,19 @@ annotations:
     - name: Repository
       url: https://github.com/secrets-bridge
   artifacthub.io/changes: |
+    - kind: added
+      description: |
+        api: object storage settings for media (objectStore.*: bucket,
+        region, endpoint, prefix, sse, kmsKeyId, forcePathStyle), mapped
+        to SB_OBJECTSTORE_* on the api. Credentials come from IRSA on the
+        api ServiceAccount, or for S3-compatible servers from an existing
+        Secret via secretKeyRef; never from values. Render-time guards
+        refuse a missing bucket, sse=aws:kms without kmsKeyId, an unknown
+        sse value, a malformed endpoint, plain http:// under
+        env=production, and static keys with kms.backend=aws-kms. The api
+        NetworkPolicy allows egress to the object store's port. Off by
+        default (objectStore.enabled=false); existing installs render
+        unchanged.
     - kind: fixed
       description: |
         worker: bind 0.0.0.0:probesPort by default + drop host:127.0.0.1

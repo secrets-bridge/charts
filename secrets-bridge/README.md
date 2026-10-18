@@ -65,7 +65,60 @@ The chart consumes a pre-existing Kubernetes Secret named by `secrets.existingSe
 
 `SB_WORKER_WEBHOOK_URL` (sweeper-failure notifications) is deliberately **not** a chart value (CHT-05 / M12). Add the key to this same Secret and point `worker.notifications.webhookUrlSecretRef.key` at it; the chart wires a `secretKeyRef`, never a plaintext env value.
 
+Object storage (`objectStore.*`) adds no required keys: on AWS it uses IRSA, and static keys for S3-compatible servers come from their own Secret (see "Object storage for media").
+
 For `aws-kms`, the api **also** needs IRSA — annotate the api ServiceAccount with the IAM role ARN that holds `kms:Encrypt` / `kms:Decrypt` / `kms:GenerateDataKey` on the configured CMK. See `api.serviceAccount.annotations`.
+
+## Object storage for media
+
+The api keeps images and media (project and team logos today, any later upload) in S3-compatible object storage, and Postgres keeps only the metadata. The bucket stays private: the api streams objects back through its own routes, so the existing authorization applies. Secret values never go to object storage. The worker doesn't read media, so only the api gets these settings.
+
+`objectStore.enabled` defaults to `false`, so an existing install keeps rendering until it has a bucket. Turn it on before you upgrade to an api release that stores media in object storage. When it's on, the chart maps the values to env vars on the api:
+
+| Value | Env var | Notes |
+|---|---|---|
+| `objectStore.bucket` | `SB_OBJECTSTORE_BUCKET` | Required when enabled. |
+| `objectStore.region` | `SB_OBJECTSTORE_REGION` | e.g. `us-east-1`. |
+| `objectStore.endpoint` | `SB_OBJECTSTORE_ENDPOINT` | Empty for AWS S3. A full URL (`https://s3.example.com:9000`) for an S3-compatible server or a VPC endpoint. |
+| `objectStore.prefix` | `SB_OBJECTSTORE_PREFIX` | Key prefix, so several installs can share a bucket. |
+| `objectStore.sse` | `SB_OBJECTSTORE_SSE` | `AES256` (default, SSE-S3), `aws:kms` (SSE-KMS), or `""` to send no SSE header and rely on the bucket default. |
+| `objectStore.kmsKeyId` | `SB_OBJECTSTORE_KMS_KEY_ID` | Required when `sse=aws:kms`. |
+| `objectStore.forcePathStyle` | `SB_OBJECTSTORE_FORCE_PATH_STYLE` | `true` for MinIO and most S3-compatible servers. |
+
+You can also leave `objectStore.enabled=false` and put the `SB_OBJECTSTORE_*` keys in `secrets.existingSecret`. The chart then renders nothing for them and skips its checks.
+
+Credentials never go in values. The api uses the standard AWS SDK chain:
+
+- On AWS S3, use IRSA. Annotate the api ServiceAccount (`api.serviceAccount.annotations`) with a role that has `s3:PutObject`, `s3:GetObject` and `s3:DeleteObject` on `arn:aws:s3:::<bucket>/<prefix>/*`, `s3:ListBucket` on the bucket (so a HEAD on a missing key returns 404 instead of 403), and `kms:GenerateDataKey` / `kms:Decrypt` on `kmsKeyId` for SSE-KMS. With `kms.backend=aws-kms` it's the same role.
+- For an S3-compatible server, create a Secret with the access key pair and set `objectStore.credentials.existingSecret`. The chart wires `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` from it through `secretKeyRef` (key names in `credentials.accessKeyIdKey` / `credentials.secretAccessKeyKey`). This can't be combined with `kms.backend=aws-kms`, because the SDK prefers those variables over IRSA and the KMS client would sign with them.
+
+```yaml
+# AWS S3, credentials from IRSA
+api:
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/secrets-bridge-api
+objectStore:
+  enabled: true
+  bucket: example-bucket
+  region: us-east-1
+  prefix: secrets-bridge
+  sse: aws:kms
+  kmsKeyId: alias/sb-media
+```
+
+```yaml
+# MinIO, static keys from an existing Secret
+objectStore:
+  enabled: true
+  bucket: example-bucket
+  region: us-east-1
+  endpoint: https://s3.example.com:9000
+  forcePathStyle: true
+  sse: ""                # MinIO without a KMS rejects SSE-S3 requests
+  credentials:
+    existingSecret: sb-objectstore-creds
+```
 
 ## OIDC + auth (Slices A1 → E)
 
@@ -112,6 +165,14 @@ api:
 | `aws-kms` selected without `kms.awsKms.region` / `keyId` AND no `secrets.existingSecret` | Errors out. |
 | `env=production` AND an enabled component has no `image.digest` and its tag isn't pinned (`X.Y.Z`, `vX.Y.Z`, optional `-prerelease`, or `sha-<hex>`; a chart dev version `X.Y.Z-dev.<sha>` doesn't count) | Errors out (CHT-03 / M11, CHT-N-02); see "Image pinning" below. |
 | `<component>.image.digest` set to anything but a bare `sha256:<64 hex>` | Errors out in every `env`. |
+| `objectStore.enabled=true` with an empty `objectStore.bucket` | Errors out. |
+| `objectStore.sse` not exactly `AES256`, `aws:kms` or empty | Errors out (case-sensitive). |
+| `objectStore.sse=aws:kms` with an empty `objectStore.kmsKeyId` | Errors out. |
+| `objectStore.endpoint` that isn't `http(s)://host[:port]` | Errors out. |
+| `objectStore.endpoint` with plain `http://` under `env=production` | Errors out. Plain HTTP is fine under `env=dev` (local MinIO). |
+| `objectStore.credentials.existingSecret` with `kms.backend=aws-kms` | Errors out: the static keys would take over the KMS client's credentials. |
+
+The `objectStore` checks only run when `objectStore.enabled=true`.
 
 ## Image pinning
 
@@ -173,12 +234,14 @@ ingress:
 
 | Component | Ingress | Egress |
 |---|---|---|
-| `api` | `:8080` from `api.networkPolicy.ingress.namespaceSelector` (default `ingress-nginx`) | DNS + `api.networkPolicy.egress.extraRules` (Postgres, Redis, KMS, OIDC: operator-specific, empty by default) |
+| `api` | `:8080` from `api.networkPolicy.ingress.namespaceSelector` (default `ingress-nginx`) | DNS + the object store when `objectStore.enabled` (see below) + `api.networkPolicy.egress.extraRules` (Postgres, Redis, KMS, OIDC: operator-specific, empty by default) |
 | `ui` | `:8080` from `ui.networkPolicy.ingress.namespaceSelector` | DNS only (static SPA, no backend calls) |
 | `worker` | none (no Service fronts it) | DNS + `worker.networkPolicy.egress.extraRules` |
 | `controller` | none, unless `controller.metricsService.enabled` | DNS + broad `443` for the Kubernetes API server (`egress.allowAPIServer`, no portable way to pin its address) |
 
 See each block's comments in `values.yaml` for worked `extraRules` examples (a Postgres+Redis subnet, a Vault endpoint, ...).
+
+With `objectStore.enabled=true` the api policy also allows TCP egress to the object store (`api.networkPolicy.egress.objectStore.enabled`, default `true`). The port comes from `objectStore.endpoint`: its explicit port, else 443 for `https` or 80 for `http`, and 443 when there's no endpoint (AWS S3). S3's addresses aren't fixed, so by default the rule allows that port to any destination, like the controller's API server rule. Narrow it with `api.networkPolicy.egress.objectStore.to` (NetworkPolicy peers, such as the S3 VPC endpoint subnet or the namespace of an in-cluster MinIO), or set `enabled: false` and write the rule in `extraRules` yourself.
 
 ## Configuration reference
 
@@ -192,7 +255,13 @@ See each block's comments in `values.yaml` for worked `extraRules` examples (a P
 | `secrets.reloader.enabled` | `true` | Annotate Deployments for stakater/reloader. |
 | `api.replicaCount` | `2` | |
 | `api.autoscaling.enabled` | `false` | HPA opt-in. |
-| `api.serviceAccount.annotations` | `{}` | IRSA role ARN goes here. |
+| `api.serviceAccount.annotations` | `{}` | IRSA role ARN goes here (KMS and S3). |
+| `objectStore.enabled` | `false` | Object storage for media. `bucket` is required when `true`. |
+| `objectStore.bucket` / `region` / `endpoint` / `prefix` | `""` | `SB_OBJECTSTORE_*` on the api. |
+| `objectStore.sse` / `kmsKeyId` | `AES256` / `""` | `aws:kms` needs `kmsKeyId`. |
+| `objectStore.forcePathStyle` | `false` | `true` for MinIO. |
+| `objectStore.credentials.existingSecret` | `""` | Static keys for S3-compatible servers. Not with `kms.backend=aws-kms`. |
+| `api.networkPolicy.egress.objectStore.enabled` / `.to` | `true` / `[]` | Egress to the object store when `objectStore.enabled`. |
 | `ui.replicaCount` | `2` | |
 | `ingress.enabled` | `true` | |
 | `ingress.host` | `secrets-bridge.example.com` | |
@@ -214,6 +283,7 @@ See each block's comments in `values.yaml` for worked `extraRules` examples (a P
 | controller Deployment + CRDs + RBAC | ✓ |
 | Shared Ingress with path routing | ✓ |
 | KMS safety rails + image-tag safety rail | ✓ |
+| Object storage settings for media (S3, S3-compatible) | ✓ |
 | Reloader integration | ✓ |
 | NetworkPolicy templates (api / ui / worker / controller) | ✓ |
 | ServiceMonitor (Prometheus) | operator-provided; see "Metrics & health checks" |

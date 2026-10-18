@@ -175,3 +175,43 @@ helm install time.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Object storage validation (charts#39, api#252). Only runs when
+objectStore.enabled: an install that hasn't configured a bucket yet
+renders unchanged. Mirrors the api's boot-time checks so a
+misconfigured store fails `helm install` instead of the api's
+readiness.
+*/}}
+{{- define "secrets-bridge.validateObjectStore" -}}
+{{- $os := .Values.objectStore -}}
+{{- if $os.enabled -}}
+{{- if not $os.bucket -}}
+{{- fail "secrets-bridge: objectStore.enabled=true requires objectStore.bucket. Set it to the bucket that holds media (logos), or set objectStore.enabled=false until one exists." -}}
+{{- end -}}
+{{- $sse := toString (default "" $os.sse) -}}
+{{- if not (has $sse (list "" "AES256" "aws:kms")) -}}
+{{- fail (printf "secrets-bridge: objectStore.sse=%q is not recognised (allowed: AES256, aws:kms, or empty for the bucket default; values are case-sensitive)" $sse) -}}
+{{- end -}}
+{{- if and (eq $sse "aws:kms") (not $os.kmsKeyId) -}}
+{{- fail "secrets-bridge: objectStore.sse=\"aws:kms\" requires objectStore.kmsKeyId (CMK ARN, key id or alias/<name>). Set it, or use sse=AES256 for SSE-S3." -}}
+{{- end -}}
+{{- $endpoint := toString (default "" $os.endpoint) -}}
+{{- if $endpoint -}}
+{{- if not (regexMatch "^https?://[^/?#]+/?$" $endpoint) -}}
+{{- fail (printf "secrets-bridge: objectStore.endpoint=%q is not a URL. Set it to a scheme and host, with an optional port and no path, e.g. https://s3.example.com or https://s3.example.com:9000." $endpoint) -}}
+{{- end -}}
+{{- if and (hasPrefix "http://" $endpoint) (eq .Values.env "production") -}}
+{{- fail (printf "secrets-bridge: objectStore.endpoint=%q is plain HTTP, which is not permitted when env=\"production\": media and S3 request signatures would cross the network unencrypted. Use an https:// endpoint." $endpoint) -}}
+{{- end -}}
+{{- end -}}
+{{- if and $os.credentials.existingSecret (eq .Values.kms.backend "aws-kms") -}}
+{{- fail "secrets-bridge: objectStore.credentials.existingSecret cannot be combined with kms.backend=aws-kms. The static AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY it injects take precedence over IRSA in the AWS SDK chain, so the KMS client would sign with the object store's keys. On AWS, grant S3 access to the api's IRSA role instead." -}}
+{{- end -}}
+{{- if $os.credentials.existingSecret -}}
+{{- if or (not $os.credentials.accessKeyIdKey) (not $os.credentials.secretAccessKeyKey) -}}
+{{- fail "secrets-bridge: objectStore.credentials.existingSecret is set, so objectStore.credentials.accessKeyIdKey and objectStore.credentials.secretAccessKeyKey must name its keys." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
