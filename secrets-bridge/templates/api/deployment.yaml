@@ -225,6 +225,8 @@ spec:
             {{- end }}
             - name: SB_OBJECTSTORE_FORCE_PATH_STYLE
               value: {{ ternary "true" "false" (eq (toString .forcePathStyle) "true") | quote }}
+            - name: SB_OBJECTSTORE_LOGO_BACKFILL
+              value: {{ ternary "false" "true" (eq (toString .logoBackfill) "false") | quote }}
             {{- with .credentials }}
             {{- if .existingSecret }}
             - name: AWS_ACCESS_KEY_ID
