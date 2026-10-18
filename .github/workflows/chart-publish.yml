@@ -51,6 +51,13 @@ name: chart-publish
 #
 # Before `helm push`, the job renders the packaged chart and checks that
 # every image it references exists on GHCR, and fails if one doesn't.
+#
+# Every pushed chart is signed with cosign, keyless, by digest (the
+# signing identity is this workflow). A version tag must be strict
+# semver and point at a commit on main. After both charts of a tag are
+# pushed, the release job creates the GitHub Release with their
+# references and digests. All repos release under one shared version;
+# see RELEASING.md in secrets-bridge/.github.
 
 on:
   push:
@@ -77,6 +84,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless cosign signing: the OIDC token is the signing identity.
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -85,6 +94,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # A tag build needs main's history to check the tag is on it.
+          fetch-depth: ${{ github.ref_type == 'tag' && 0 || 1 }}
+
+      - name: Check the version tag
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::$TAG is not a semver tag (vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-pre)"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$TAG does not point at a commit on main"
+            exit 1
+          fi
 
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
@@ -177,9 +202,33 @@ jobs:
                 --username ${{ github.actor }} --password-stdin
 
       - name: Push to GHCR (oci://${{ env.REGISTRY }}/${{ env.ORG }}/charts)
+        id: push
+        env:
+          TGZ: ${{ steps.package.outputs.tgz }}
+          DEST: oci://${{ env.REGISTRY }}/${{ env.ORG }}/charts
         run: |
-          helm push "${{ steps.package.outputs.tgz }}" \
-            oci://${{ env.REGISTRY }}/${{ env.ORG }}/charts
+          out=$(helm push "$TGZ" "$DEST" 2>&1)
+          echo "$out"
+          digest=$(awk '/^Digest:/ {print $2}' <<<"$out")
+          if [[ "$digest" != sha256:* ]]; then
+            echo "::error::helm push printed no digest"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign the chart
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          CHART: ${{ env.REGISTRY }}/${{ env.ORG }}/charts/${{ steps.chart.outputs.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          # helm's registry login doesn't reach cosign's credential store.
+          echo "$GH_TOKEN" | cosign login "${CHART%%/*}" --username "$ACTOR" --password-stdin
+          cosign sign --yes "${CHART}@${DIGEST}"
 
       - name: Output published version
         run: |
@@ -189,3 +238,48 @@ jobs:
           echo "Consume:"
           echo "  helm pull oci://${{ env.REGISTRY }}/${{ env.ORG }}/charts/${{ steps.chart.outputs.name }} \\"
           echo "    --version ${{ steps.chart.outputs.version }}"
+          echo "Digest: ${{ steps.push.outputs.digest }}"
+
+  release:
+    name: GitHub release
+    if: github.ref_type == 'tag'
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          CHARTS: ${{ env.REGISTRY }}/${{ env.ORG }}/charts
+          WORKFLOW: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/chart-publish.yml@${{ github.ref }}
+        run: |
+          version="${TAG#v}"
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            echo "### Charts"
+            echo
+            for name in secrets-bridge secrets-bridge-agent; do
+              # The digest of the pushed chart, read back from GHCR (the
+              # charts are public, so an anonymous pull token is enough).
+              token=$(curl -fsS "https://ghcr.io/token?scope=repository:${CHARTS#ghcr.io/}/${name}:pull" | jq -r .token)
+              digest=$(curl -fsSI -H "Authorization: Bearer ${token}" \
+                -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+                "https://ghcr.io/v2/${CHARTS#ghcr.io/}/${name}/manifests/${version}" \
+                | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" {print $2}')
+              [[ "$digest" == sha256:* ]] || { echo "::error::no digest for ${name}:${version}"; exit 1; }
+              echo "- \`helm pull oci://${CHARTS}/${name} --version ${version}\` (\`${digest}\`)"
+              echo
+              echo '```'
+              echo "cosign verify ${CHARTS}/${name}@${digest} \\"
+              echo "  --certificate-identity ${WORKFLOW} \\"
+              echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+              echo '```'
+              echo
+            done
+          } > "$notes"
+          args=(--title "$TAG" --verify-tag --generate-notes --notes-file "$notes" --repo "$REPO")
+          [[ "$TAG" == *-* ]] && args+=(--prerelease)
+          gh release create "$TAG" "${args[@]}"
