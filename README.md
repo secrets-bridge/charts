@@ -54,14 +54,27 @@ The control plane comes up behind a single Ingress: the SPA at `/` and the api a
 
 Agents onboard with a one-time enrollment token. Direct mint (`POST /api/v1/agents`) returns 403 unless the control plane runs with `SB_ALLOW_DIRECT_AGENT_MINT=true`, a break-glass switch that stays off.
 
+Scripts authenticate with the session cookie from `POST /api/v1/auth/login`; the api reads no bearer token for users. Creating an enrollment token needs `agent.mint` and no fresh second factor. Routes that require step-up MFA refuse a session without a recent second factor (`401` with `WWW-Authenticate: step-up`), so do those in the console.
+
 ```bash
 # 1. On the CP, an admin with agent.mint creates a one-time token for the
-#    provider connection this agent will serve.
-curl -X POST https://secrets-bridge.example.com/api/v1/provider-connections/<connection-id>/agent-enrollment-token \
-  -H "Authorization: Bearer $SB_ADMIN_TOKEN" \
+#    provider connection this agent will serve (or creates it in the
+#    console). Login sets a session cookie and returns no token, so the
+#    cookie goes into a private cookie jar. The password is read from the
+#    terminal, not typed on the command line.
+CP=https://secrets-bridge.example.com
+JAR=$(mktemp) && chmod 600 "$JAR"
+read -rp 'Admin email: ' SB_ADMIN_EMAIL
+read -rsp 'Admin password: ' SB_ADMIN_PASSWORD; echo
+jq -n --arg e "$SB_ADMIN_EMAIL" --arg p "$SB_ADMIN_PASSWORD" '{email:$e,password:$p}' \
+  | curl -fsS -c "$JAR" -o /dev/null -X POST "$CP/api/v1/auth/login" \
+      -H 'Content-Type: application/json' --data-binary @-
+unset SB_ADMIN_PASSWORD
+curl -fsS -b "$JAR" -X POST "$CP/api/v1/provider-connections/<connection-id>/agent-enrollment-token" \
   -H 'Content-Type: application/json' \
   -d '{"expected_cluster_name":"prod-eu","expected_provider_type":"vault"}'
 # → { "enrollment_token": "...", "expires_at": "...", ... }
+rm -f "$JAR"
 
 # 2. Put the token in a Secret in the WORKLOAD cluster. bash or zsh:
 #    paste the token at the silent prompt, then Enter. It never reaches

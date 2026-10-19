@@ -9,9 +9,9 @@
 #   3. Pre-create the env Secret named by `secrets.existingSecret`
 #      with everything the api and worker need: `DATABASE_URL` and
 #      `REDIS_URL` (the chart has no values for these; they only come
-#      from that Secret), `SB_JWT_SECRET`, `SB_WRAP_MASTER_KEY` (dev
-#      only), and the KMS-specific knobs. See the chart README
-#      "Required secrets" for the exact key list per backend.
+#      from that Secret), `SB_WRAP_MASTER_KEY` (dev only), and the
+#      KMS-specific knobs. See the chart README "Required secrets"
+#      for the exact key list per backend.
 #   4. Under `env: production`, pin every enabled component's image:
 #      `<component>.image.digest` (preferred) or a release / sha-<hex>
 #      `<component>.image.tag`. See `api.image` below.
@@ -47,7 +47,6 @@ fullnameOverride: ""
 # By default the chart references an existing Kubernetes Secret that
 # the operator pre-creates with every env var the api / worker need:
 #
-#   - SB_JWT_SECRET
 #   - SB_WRAP_MASTER_KEY            (only when env=dev)
 #   - DATABASE_URL
 #   - REDIS_URL
@@ -286,7 +285,6 @@ api:
   config:
     logLevel: info
     gitopsEnabled: false
-    jwtTokenTTL: 8h
 
     # Local-admin bootstrap (architect Q1). Optional user-id grant
     # of the seed `admin` role on first boot. Email + password are

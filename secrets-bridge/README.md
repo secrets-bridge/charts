@@ -51,7 +51,6 @@ The chart consumes a pre-existing Kubernetes Secret named by `secrets.existingSe
 |---|---|---|---|---|
 | `DATABASE_URL` | ✓ | ✓ | ✓ | ✓ |
 | `REDIS_URL` | ✓ | ✓ | ✓ | ✓ |
-| `SB_JWT_SECRET` | ✓ | ✓ | ✓ | ✓ |
 | `SB_BOOTSTRAP_ADMIN_EMAIL` + `SB_BOOTSTRAP_ADMIN_PASSWORD` | optional | optional | optional | optional |
 | `SB_OIDC_CLIENT_SECRET` | _(when OIDC enabled)_ | ✓ | ✓ | ✓ |
 | `SB_DEV_SEED_PASSWORD` | _(optional dev)_ | — | — | optional |
@@ -231,7 +230,7 @@ When `secrets.reloader.enabled=true` (default), the chart annotates the api Depl
             └─────────────────────────────────────────┘
 ```
 
-The SPA loads from `/`, makes XHR calls to `/api/v1/*` on the same origin, gets back a JWT, stores it in memory. No CORS, no second domain, one TLS cert.
+The SPA loads from `/`, makes XHR calls to `/api/v1/*` on the same origin, and authenticates with the HttpOnly session cookie that login sets. No CORS, no second domain, one TLS cert.
 
 To shift the api root path (e.g. proxy already prepends `/sb/api/v1`), override `ingress.apiPaths`:
 
