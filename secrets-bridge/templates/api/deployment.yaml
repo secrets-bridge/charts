@@ -63,8 +63,6 @@ spec:
               value: {{ .Values.api.config.logLevel | quote }}
             - name: SB_GITOPS_ENABLED
               value: {{ .Values.api.config.gitopsEnabled | quote }}
-            - name: SB_JWT_TOKEN_TTL
-              value: {{ .Values.api.config.jwtTokenTTL | quote }}
             {{- with .Values.api.config.bootstrap.userId }}
             - name: SB_BOOTSTRAP_ADMIN_USER_ID
               value: {{ . | quote }}
