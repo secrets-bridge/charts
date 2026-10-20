@@ -24,7 +24,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        checksum/config: {{ printf "%s|%s|%s" .Values.env .Values.kms.backend (default "" .Values.secrets.existingSecret) | sha256sum }}
+        checksum/config: {{ printf "%s|%s" .Values.env (default "" .Values.secrets.existingSecret) | sha256sum }}
         {{- with .Values.worker.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -59,38 +59,6 @@ spec:
               value: {{ .Values.env | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.worker.config.logLevel | quote }}
-            - name: SB_WORKER_GITOPS_ENABLED
-              value: {{ .Values.worker.config.gitopsEnabled | quote }}
-            - name: SB_KMS_BACKEND
-              value: {{ .Values.kms.backend | quote }}
-            {{- if eq .Values.kms.backend "vault-transit" }}
-            {{- with .Values.kms.vaultTransit.addr }}
-            - name: SB_KMS_VAULT_ADDR
-              value: {{ . | quote }}
-            {{- end }}
-            {{- with .Values.kms.vaultTransit.mount }}
-            - name: SB_KMS_VAULT_MOUNT
-              value: {{ . | quote }}
-            {{- end }}
-            {{- with .Values.kms.vaultTransit.key }}
-            - name: SB_KMS_VAULT_KEY
-              value: {{ . | quote }}
-            {{- end }}
-            {{- end }}
-            {{- if eq .Values.kms.backend "aws-kms" }}
-            {{- with .Values.kms.awsKms.region }}
-            - name: SB_KMS_AWS_REGION
-              value: {{ . | quote }}
-            {{- end }}
-            {{- with .Values.kms.awsKms.keyId }}
-            - name: SB_KMS_AWS_KEY_ID
-              value: {{ . | quote }}
-            {{- end }}
-            {{- with .Values.kms.awsKms.endpoint }}
-            - name: SB_KMS_AWS_ENDPOINT
-              value: {{ . | quote }}
-            {{- end }}
-            {{- end }}
             {{- range $key, $val := dict
                 "wrapsExpiredInterval" "SB_WORKER_WRAPS_EXPIRED_INTERVAL"
                 "secretsStaleInterval" "SB_WORKER_SECRETS_STALE_INTERVAL"
@@ -98,18 +66,30 @@ spec:
                 "jobsRecoveryInterval" "SB_WORKER_JOBS_RECOVERY_INTERVAL"
                 "discoverInterval"     "SB_WORKER_DISCOVER_INTERVAL"
                 "secretsStaleAfter"    "SB_WORKER_SECRETS_STALE_AFTER"
-                "agentsStaleAfter"     "SB_WORKER_AGENTS_STALE_AFTER"
-                "gitopsPollInterval"   "SB_WORKER_GITOPS_POLL_INTERVAL"
-                "gitopsTimeoutInterval" "SB_WORKER_GITOPS_TIMEOUT_INTERVAL"
-                "gitopsHttpTimeout"    "SB_WORKER_GITOPS_HTTP_TIMEOUT" }}
+                "agentsStaleAfter"     "SB_WORKER_AGENTS_STALE_AFTER" }}
             {{- with index $.Values.worker.config $key }}
             - name: {{ $val }}
               value: {{ . | quote }}
             {{- end }}
             {{- end }}
-            {{- with .Values.worker.config.gitopsBatchSize }}
-            - name: SB_WORKER_GITOPS_BATCH_SIZE
+            {{- with .Values.worker.config.gatewaySweepers }}
+            - name: SB_WORKER_GATEWAY_SWEEPERS_ENABLED
+              value: {{ .enabled | default false | quote }}
+            {{- if .enabled }}
+            {{- range $key, $val := dict
+                "observationLeasesInterval"    "SB_WORKER_OBSERVATION_LEASES_INTERVAL"
+                "observationDeadlinesInterval" "SB_WORKER_OBSERVATION_DEADLINES_INTERVAL"
+                "observationBatchSize"         "SB_WORKER_OBSERVATION_BATCH_SIZE"
+                "gatewaysStaleInterval"        "SB_WORKER_GATEWAYS_STALE_INTERVAL"
+                "gatewaysStaleAfter"           "SB_WORKER_GATEWAYS_STALE_AFTER"
+                "gatewayReplicasPruneInterval" "SB_WORKER_GATEWAY_REPLICAS_PRUNE_INTERVAL"
+                "gatewayReplicasRetention"     "SB_WORKER_GATEWAY_REPLICAS_RETENTION" }}
+            {{- with index $.Values.worker.config.gatewaySweepers $key }}
+            - name: {{ $val }}
               value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- with .Values.worker.notifications.webhookUrlSecretRef }}
             {{- if .key }}

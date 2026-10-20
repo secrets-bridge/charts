@@ -284,7 +284,6 @@ api:
   # `secrets.existingSecret` via envFrom.
   config:
     logLevel: info
-    gitopsEnabled: false
 
     # Local-admin bootstrap (architect Q1). Optional user-id grant
     # of the seed `admin` role on first boot. Email + password are
@@ -637,9 +636,10 @@ ingress:
 
 # ── worker ───────────────────────────────────────────────────────────
 #
-# Background sweepers + the GitOps observation poller. The worker
-# shares the api's env Secret (DATABASE_URL, REDIS_URL, KMS knobs)
-# but never exposes a Service. Its probe listener binds
+# Background sweepers. The worker reads DATABASE_URL and REDIS_URL
+# from the api's env Secret and never exposes a Service. It doesn't
+# talk to Argo CD (the Gateway does) and needs no KMS settings or KMS
+# access: don't give its ServiceAccount a KMS role. Its probe listener binds
 # `bindAddress` (0.0.0.0 by default, see below) so the kubelet can
 # reach it on the pod IP.
 
@@ -727,8 +727,6 @@ worker:
   # `secrets.existingSecret` via envFrom (same bag as the api).
   config:
     logLevel: info
-    # Mirror the api's GitOps flag — BOTH sides must agree.
-    gitopsEnabled: false
     # Sweep cadences. Defaults match the worker binary; uncomment to
     # override.
     # wrapsExpiredInterval: 1m
@@ -738,10 +736,24 @@ worker:
     # discoverInterval: 1h
     # secretsStaleAfter: 24h
     # agentsStaleAfter: 5m
-    # gitopsPollInterval: 15s
-    # gitopsTimeoutInterval: 1m
-    # gitopsHttpTimeout: 15s
-    # gitopsBatchSize: 20
+
+    # Gateway observation sweepers: observation-leases,
+    # observation-deadlines, gateways-stale and gateway-replicas-prune.
+    # Turn them on whenever any environment's observation source is
+    # gateway, or observation tasks never expire and a stopped Gateway
+    # is never marked stale. Off, the worker never touches the gateway
+    # and observation tables. The settings below are rendered only
+    # when `enabled` is true; the values match the worker's defaults,
+    # and an empty value leaves the worker's default in place.
+    gatewaySweepers:
+      enabled: false                      # SB_WORKER_GATEWAY_SWEEPERS_ENABLED
+      observationLeasesInterval: 30s      # SB_WORKER_OBSERVATION_LEASES_INTERVAL (min 5s)
+      observationDeadlinesInterval: 30s   # SB_WORKER_OBSERVATION_DEADLINES_INTERVAL (min 5s)
+      observationBatchSize: 200           # SB_WORKER_OBSERVATION_BATCH_SIZE (1 to 1000)
+      gatewaysStaleInterval: 1m           # SB_WORKER_GATEWAYS_STALE_INTERVAL (min 10s)
+      gatewaysStaleAfter: 2m              # SB_WORKER_GATEWAYS_STALE_AFTER (min 1m)
+      gatewayReplicasPruneInterval: 1h    # SB_WORKER_GATEWAY_REPLICAS_PRUNE_INTERVAL (min 1m)
+      gatewayReplicasRetention: 24h       # SB_WORKER_GATEWAY_REPLICAS_RETENTION (min 10m)
 
   # Notifications. A sweeper-failure webhook URL is sensitive enough
   # (routes to a Slack channel / PagerDuty integration) that it must
@@ -775,9 +787,9 @@ worker:
   # CHT-01 / M9: no Service fronts the worker, so ingress is denied
   # entirely (kubelet reaches the probe port via the pod IP directly,
   # outside pod-to-pod NetworkPolicy enforcement on most CNIs; see
-  # `bindAddress` above). Egress needs the same Postgres/Redis/KMS
-  # destinations as the api, plus wherever `notifications.webhookUrlSecretRef`
-  # points.
+  # `bindAddress` above). Egress needs Postgres and Redis, plus
+  # wherever `notifications.webhookUrlSecretRef` points. The worker no
+  # longer calls KMS or Argo CD, so remove any rule added for them.
   networkPolicy:
     enabled: true
     egress:

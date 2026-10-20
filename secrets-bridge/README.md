@@ -1,6 +1,6 @@
 # secrets-bridge
 
-Helm chart for the **Secrets Bridge control plane** — `api` (Fiber/Go), `worker` (sweepers + GitOps poller), `ui` (React SPA), and `controller` (Kubernetes reconciler), bundled together with a shared ingress.
+Helm chart for the **Secrets Bridge control plane**: `api` (Fiber/Go), `worker` (background sweepers), `ui` (React SPA), and `controller` (Kubernetes reconciler), bundled together with a shared ingress.
 
 The **agent** runs in workload clusters and ships in its own chart (`charts/agent/`, follow-up). This chart is the operator-facing install for the control-plane cluster only.
 
@@ -38,7 +38,7 @@ helm install secrets-bridge ./charts/secrets-bridge \
 | `api` | Deployment + Service + ServiceAccount + PDB + HPA (opt) | Fiber/Go control-plane API |
 | `ui` | Deployment + Service + ServiceAccount + PDB | React SPA served by nginx |
 | `ingress` | Single Ingress with path routing | Same host → ui at `/`, api at `/api/v1` |
-| `worker` | Deployment + ServiceAccount + PDB (opt) + NetworkPolicy (opt) | Sweepers + GitOps poller |
+| `worker` | Deployment + ServiceAccount + PDB (opt) + NetworkPolicy (opt) | Background sweepers |
 | `controller` | Deployment + CRD + RBAC + NetworkPolicy (opt) | Kubernetes CRD reconciler |
 
 The shared ingress is the key piece: the SPA's `/api/v1/*` calls go to the same host as the SPA itself, no CORS, one TLS cert. `/healthz`, `/readyz`, and `/metrics` are deliberately **not** on the public ingress by default (see "Metrics & health checks" below); `apiPaths` defaults to just `/api`.
@@ -66,7 +66,35 @@ The chart consumes a pre-existing Kubernetes Secret named by `secrets.existingSe
 
 Object storage (`objectStore.*`) adds no required keys: on AWS it uses IRSA, and static keys for S3-compatible servers come from their own Secret (see "Object storage for media").
 
+Only the api reads the `SB_KMS_*` keys. The worker shares the Secret through `envFrom` but ignores them, and it needs no KMS access (see "Argo CD and the Gateway").
+
 For `aws-kms`, the api **also** needs IRSA — annotate the api ServiceAccount with the IAM role ARN that holds `kms:Encrypt` / `kms:Decrypt` / `kms:GenerateDataKey` on the configured CMK. See `api.serviceAccount.annotations`.
+
+## Argo CD and the Gateway
+
+The Gateway (the `gateway` chart in this repo) is the only Secrets Bridge component that talks to Argo CD (secrets-bridge/gateway#13). The api and the worker no longer have an Argo CD client, and the worker's GitOps poller is gone. This chart follows:
+
+- `api.config.gitopsEnabled`, `worker.config.gitopsEnabled` and the `worker.config.gitopsPollInterval`, `gitopsTimeoutInterval`, `gitopsHttpTimeout` and `gitopsBatchSize` values were removed. Delete them from your values files; Helm ignores them, so they do nothing.
+- `SB_GITOPS_ENABLED`, `SB_ALLOW_INSECURE_ARGOCD_ADDR` and `SB_WORKER_GITOPS_*` are no longer rendered. If one is still set in your env Secret, the api or worker logs its name (never the value) once at startup and otherwise ignores it. Remove it from the Secret.
+- The worker no longer gets `SB_KMS_*` env and needs no KMS access. It only used KMS to unwrap stored Argo CD tokens. Take the KMS permissions off the worker's IAM role (`worker.serviceAccount.annotations`) or Vault policy. The api still needs its KMS access, so leave the api's role alone.
+- Remove any Argo CD egress you added to `api.networkPolicy.egress.extraRules` or `worker.networkPolicy.egress.extraRules`. Neither component calls Argo CD now; the Gateway chart has its own NetworkPolicy for that.
+
+### Gateway sweepers in the worker
+
+When any environment's observation source is `gateway`, turn on the worker's Gateway sweepers with `worker.config.gatewaySweepers.enabled=true`. They expire observation leases and deadlines, mark a Gateway stale when its heartbeats stop, and prune old Gateway replica rows. Without them, observation tasks never time out and a stopped Gateway stays healthy in the console. They're off by default, and off the worker never touches the gateway and observation tables.
+
+| Value | Env | Default | Floor |
+|---|---|---|---|
+| `worker.config.gatewaySweepers.enabled` | `SB_WORKER_GATEWAY_SWEEPERS_ENABLED` | `false` | |
+| `observationLeasesInterval` | `SB_WORKER_OBSERVATION_LEASES_INTERVAL` | `30s` | `5s` |
+| `observationDeadlinesInterval` | `SB_WORKER_OBSERVATION_DEADLINES_INTERVAL` | `30s` | `5s` |
+| `observationBatchSize` | `SB_WORKER_OBSERVATION_BATCH_SIZE` | `200` | 1 to 1000 |
+| `gatewaysStaleInterval` | `SB_WORKER_GATEWAYS_STALE_INTERVAL` | `1m` | `10s` |
+| `gatewaysStaleAfter` | `SB_WORKER_GATEWAYS_STALE_AFTER` | `2m` | `1m` |
+| `gatewayReplicasPruneInterval` | `SB_WORKER_GATEWAY_REPLICAS_PRUNE_INTERVAL` | `1h` | `1m` |
+| `gatewayReplicasRetention` | `SB_WORKER_GATEWAY_REPLICAS_RETENTION` | `24h` | `10m` |
+
+The chart always renders `SB_WORKER_GATEWAY_SWEEPERS_ENABLED`, and the rest only when it's `true`. The defaults match the worker's own; an empty value leaves the worker's default in place. The worker refuses to boot on a value under its floor. Set the switch here rather than in the env Secret: the rendered env entry wins over the Secret's `envFrom`. The sweepers use the Postgres and Redis the worker already reaches, so they need no new egress.
 
 ## Object storage for media
 
@@ -260,6 +288,8 @@ ingress:
 
 See each block's comments in `values.yaml` for worked `extraRules` examples (a Postgres+Redis subnet, a Vault endpoint, ...).
 
+Neither the api nor the worker calls Argo CD any more, and the worker doesn't call KMS. If you added `extraRules` for an Argo CD server to either component, or for KMS to the worker, remove them.
+
 With `objectStore.enabled=true` the api policy also allows TCP egress to the object store (`api.networkPolicy.egress.objectStore.enabled`, default `true`). The port comes from `objectStore.endpoint`: its explicit port, else 443 for `https` or 80 for `http`, and 443 when there's no endpoint (AWS S3). S3's addresses aren't fixed, so by default the rule allows that port to any destination, like the controller's API server rule. Narrow it with `api.networkPolicy.egress.objectStore.to` (NetworkPolicy peers, such as the S3 VPC endpoint subnet or the namespace of an in-cluster MinIO), or set `enabled: false` and write the rule in `extraRules` yourself.
 
 ## Configuration reference
@@ -287,6 +317,7 @@ With `objectStore.enabled=true` the api policy also allows TCP egress to the obj
 | `ingress.host` | `secrets-bridge.example.com` | |
 | `ingress.tls.clusterIssuer` | `""` | When set, adds `cert-manager.io/cluster-issuer` annotation. |
 | `worker.enabled` | `true` | |
+| `worker.config.gatewaySweepers.enabled` | `false` | Gateway observation sweepers. Needed whenever any environment's observation source is `gateway`. See "Gateway sweepers in the worker". |
 | `controller.enabled` | `true` | |
 | `api.networkPolicy.enabled` / `ui.…` / `worker.…` / `controller.…` | `true` | Default-deny NetworkPolicy per component. |
 | `api.image.digest` / `ui.…` / `worker.…` / `controller.…` | `""` | Bare `sha256:<64 hex>` pin; overrides `image.tag` when set. |

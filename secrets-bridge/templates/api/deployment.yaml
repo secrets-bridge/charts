@@ -61,8 +61,6 @@ spec:
               value: {{ .Values.env | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.api.config.logLevel | quote }}
-            - name: SB_GITOPS_ENABLED
-              value: {{ .Values.api.config.gitopsEnabled | quote }}
             {{- with .Values.api.config.bootstrap.userId }}
             - name: SB_BOOTSTRAP_ADMIN_USER_ID
               value: {{ . | quote }}
