@@ -1,0 +1,55 @@
+apiVersion: v2
+name: secrets-bridge-gateway
+description: |
+  Secrets Bridge Gateway, Release 1: read-only Argo CD rollout-state
+  observation. Runs inside a customer boundary, claims observation tasks
+  from the control plane over outbound HTTPS and reports metadata-only
+  evidence.
+
+  Hard rules baked into this chart:
+    - Argo CD connectors only. The Release 2 eso and rollout kinds are
+      not rendered and cannot be switched on.
+    - No Kubernetes RBAC and no ServiceAccount token
+      (automountServiceAccountToken: false).
+    - No Service, no Ingress, no PVC. Health and metrics stay on
+      loopback; probes are exec probes on `gateway healthcheck`.
+    - NetworkPolicy on by default: no ingress, egress only to DNS, the
+      control plane and the listed Argo CD endpoints.
+    - The identity and every Argo CD token come from existing Secrets
+      mounted read-only as files, never from chart values or env vars.
+    - Pinned image required (digest, X.Y.Z or sha-<hex>) unless
+      image.allowMutableTag=true for local dev.
+type: application
+home: https://secrets-bridge.io
+icon: https://raw.githubusercontent.com/secrets-bridge/.github/main/profile/logo.svg
+sources:
+  - https://github.com/secrets-bridge/gateway
+maintainers:
+  - name: secrets-bridge
+    url: https://github.com/secrets-bridge
+
+# Pre-v0.1.0: the chart and the image both roll on `:dev`.
+version: 0.0.1
+appVersion: "dev"
+
+kubeVersion: ">=1.27.0-0"
+
+keywords:
+  - secrets
+  - argocd
+  - gitops
+  - observability
+  - gateway
+  - kubernetes
+
+annotations:
+  artifacthub.io/category: security
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/links: |
+    - name: Docs
+      url: https://secrets-bridge.io
+    - name: Gateway repository
+      url: https://github.com/secrets-bridge/gateway
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial chart for the Gateway, Release 1 (Argo CD only)

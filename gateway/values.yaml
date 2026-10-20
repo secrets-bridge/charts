@@ -1,0 +1,222 @@
+# Secrets Bridge Gateway chart, Release 1 (Argo CD only).
+#
+# Operator orientation (details in README.md):
+#   1. On the control plane, an admin with gateway.mint creates the
+#      Gateway and a one-time enrollment token for it.
+#   2. Enroll once, outside the cluster, and store the returned
+#      {"gateway_id", "gateway_secret"} JSON in a Secret under the key
+#      identity.key (default identity.json). Set identity.existingSecret.
+#   3. Create a read-only Argo CD account and token (applications, get)
+#      and store the token in a Secret. Reference it from
+#      connectors.argocd[].tokenSecret.
+#   4. Set cp.endpoint, the egress peers for the control plane and for
+#      each Argo CD endpoint, and pin the image.
+#
+# Every example below uses placeholders only.
+
+global:
+  imageRegistry: ghcr.io
+  imagePullSecrets: []
+  commonLabels: {}
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: secrets-bridge/gateway
+  # Defaults to .Chart.AppVersion ("dev" pre-v0.1.0) when empty. The
+  # chart renders only a pinned image: a full release version (X.Y.Z or
+  # vX.Y.Z, optional -prerelease) or a sha-<hex> build tag. Moving tags
+  # (dev, latest, main, X.Y, X) fail the render unless allowMutableTag
+  # is true.
+  tag: ""
+  # Bare "sha256:<64 hex>" manifest pin (no repository, no @). Overrides
+  # tag when set. Preferred for any real install.
+  digest: ""
+  # Dev only: render a moving tag anyway.
+  allowMutableTag: false
+  pullPolicy: IfNotPresent
+
+# Replicas share one Gateway identity and do not coordinate; the control
+# plane hands each task to one replica through its lease.
+replicaCount: 2
+
+# SB_INSECURE_TRANSPORT. Allows plain http:// for cp.endpoint AND for
+# every connectors.argocd[].baseURL (the Gateway has one switch for
+# both). Local development only; the Argo CD token then crosses the
+# network in clear.
+insecureTransport: false
+
+# SB_LOG_LEVEL: debug, info, warn or error.
+logLevel: info
+
+# SB_GATEWAY_SHUTDOWN_GRACE. Empty uses the binary default (15s). Keep
+# terminationGracePeriodSeconds above it so in-flight passes can finish
+# and unfinished tasks are released before the kubelet kills the pod.
+shutdownGrace: ""
+terminationGracePeriodSeconds: 30
+
+# Loopback port for /healthz, /readyz and /metrics
+# (SB_GATEWAY_LOCAL_ADDR=127.0.0.1:<port>). Nothing outside the pod can
+# reach it; the probes are exec probes that run inside the container.
+localPort: 8091
+
+# ── Control plane ────────────────────────────────────────────────────
+cp:
+  # SB_CP_ENDPOINT, required. https:// only unless insecureTransport is
+  # true. No userinfo. Example: "https://cp.example.com"
+  endpoint: ""
+  # Private CA for the control plane: an existing Secret holding a PEM
+  # bundle under caExistingSecretKey (SB_CP_CA_FILE). Empty uses the
+  # system roots.
+  caExistingSecret: ""
+  caExistingSecretKey: ca.crt
+  # SB_CP_TLS_SERVER_NAME.
+  tlsServerName: ""
+  # Loop tuning. Empty uses the binary defaults: heartbeat 30s, claim 5s,
+  # claim idle max 30s, concurrency 1, lease margin 3s, pass timeout 30s,
+  # unreachable after 2m.
+  heartbeatInterval: ""
+  claimInterval: ""
+  claimIdleMax: ""
+  claimConcurrency: ""
+  leaseMargin: ""
+  passTimeout: ""
+  unreachableAfter: ""
+  # NetworkPolicy egress to the control plane. NetworkPolicy cannot match
+  # a hostname, so list the CIDRs the endpoint resolves to (its load
+  # balancer or ingress addresses). Required while networkPolicy.enabled.
+  egress:
+    cidrs: []
+    # - 192.0.2.10/32
+    port: 443
+
+# ── Identity ─────────────────────────────────────────────────────────
+#
+# The Gateway credential is {"gateway_id": "<uuid>", "gateway_secret":
+# "<secret>"}, returned once by enrollment. Store that JSON in an
+# existing Secret; the chart mounts it read-only as a file
+# (SB_GATEWAY_IDENTITY_FILE) with mode 0440 and fsGroup, which the
+# Gateway accepts. There is no inline credential, no enrollment token
+# value and no env-var mode in this chart.
+identity:
+  # Required. Name of the Secret holding the identity JSON.
+  existingSecret: ""
+  # Key inside the Secret that holds the identity JSON.
+  key: identity.json
+
+# ── Connectors ───────────────────────────────────────────────────────
+#
+# Release 1 binds Argo CD connectors only. The chart renders them into
+# a ConfigMap (SB_GATEWAY_CONNECTORS_FILE) that holds URLs, allowlists
+# and file paths, never a token. Each token Secret is mounted read-only
+# as a file at /etc/secrets-bridge/gateway/argocd/<name>/token and
+# re-read on rotation. The eso and rollout kinds (Release 2) are not
+# supported by this chart.
+connectors:
+  # At least one entry is required.
+  argocd: []
+  # - name: argocd-main               # DNS label, unique; the control plane binds to it
+  #   baseURL: https://argocd.example.com
+  #   tokenSecret:
+  #     name: sb-gateway-argocd-token # existing Secret
+  #     key: token
+  #   caSecret:                       # optional private CA for this Argo CD
+  #     name: ""
+  #     key: ca.crt
+  #   tlsServerName: ""
+  #   timeout: ""                     # 1s to 60s; empty uses the default (10s)
+  #   allowedProjects: [tenant-a-uat] # AppProject allowlist, at least one
+  #   applications:                   # at least one
+  #     - id: payments-api            # local target id the control plane names
+  #       name: payments-api          # Argo CD Application name
+  #       appNamespace: ""            # for apps in any namespace
+  #   egress:                         # NetworkPolicy peer, required while networkPolicy.enabled
+  #     cidrs: []                     # for an Argo CD outside the cluster, e.g. [198.51.100.20/32]
+  #     namespaceSelector: {}         # for an in-cluster argocd-server, e.g.
+  #     podSelector: {}               #   {matchLabels: {kubernetes.io/metadata.name: argocd}}
+  #                                   #   and {matchLabels: {app.kubernetes.io/name: argocd-server}}
+  #     port: 443                     # in-cluster argocd-server pods listen on 8080
+
+# ── NetworkPolicy ────────────────────────────────────────────────────
+#
+# No ingress at all. Egress only to DNS, the control plane
+# (cp.egress) and each Argo CD endpoint (connectors.argocd[].egress).
+# There is no fallback to "443 to anywhere": with the policy enabled,
+# every peer must be listed or the render fails.
+networkPolicy:
+  enabled: true
+  dns:
+    # Empty selects kube-system.
+    namespaceSelector: {}
+    # Empty selects k8s-app=kube-dns.
+    podSelector: {}
+
+# ── ServiceAccount ───────────────────────────────────────────────────
+#
+# Release 1 reads no Kubernetes API: the chart renders a ServiceAccount
+# with no Role or binding, and the token is never mounted (both on the
+# ServiceAccount and on the pod). There is no switch to turn it on.
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ── Pod ──────────────────────────────────────────────────────────────
+
+# fsGroup gives the Secret files group read (0440), which the Gateway
+# accepts for its identity file. OnRootMismatch keeps kubelet from
+# re-applying group bits on every mount.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  privileged: false
+  capabilities:
+    drop: [ALL]
+  seccompProfile:
+    type: RuntimeDefault
+
+# Exec probes on `gateway healthcheck` (readiness: /readyz) and
+# `gateway healthcheck --live` (liveness: /healthz). The command is fixed
+# by the chart; only the timing is configurable. Readiness turns true
+# once a heartbeat and the catalog are accepted and every connector
+# self-check has passed.
+livenessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+readinessProbe:
+  initialDelaySeconds: 2
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 48Mi
+  limits:
+    memory: 128Mi
+
+# Rendered only when replicaCount is 2 or more.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []

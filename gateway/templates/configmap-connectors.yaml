@@ -1,0 +1,14 @@
+{{- /* Always rendered, so the render-time guards run on every install. */ -}}
+{{- include "secrets-bridge-gateway.validate" . -}}
+# The connectors file: URLs, allowlists and file paths only. Tokens stay
+# in their Secrets and reach the pod as read-only files.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "secrets-bridge-gateway.connectorsConfigMapName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge-gateway.labels" . | nindent 4 }}
+data:
+  connectors.json: |
+    {{- include "secrets-bridge-gateway.connectorsJSON" . | nindent 4 }}

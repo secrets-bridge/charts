@@ -10,6 +10,7 @@ Helm charts for deploying Secrets Bridge.
 |---|---|
 | `secrets-bridge/` | The control plane: api, ui, worker and controller behind one ingress (SPA at `/`, API at `/api/v1`). Reads its configuration from an existing Secret (`secrets.existingSecret`) |
 | `agent/` | One agent per workload cluster or account |
+| `gateway/` | The optional Gateway, Release 1: read-only Argo CD rollout-state observation. No RBAC, no ServiceAccount token, Argo CD connectors only |
 
 ## Build and test
 
@@ -18,13 +19,15 @@ CI runs the same steps:
 ```bash
 helm lint secrets-bridge/
 helm lint agent/
+helm lint gateway/
 
 # render the presets and validate them
 helm template ci-dev secrets-bridge/ <dev preset values> | kubeconform -strict -summary -skip CustomResourceDefinition
 helm template ci-agent agent/ <agent preset values> | kubeconform -strict -summary -skip CustomResourceDefinition
+helm template ci-gateway gateway/ -f gateway/ci/r1-values.yaml | kubeconform -strict -summary
 ```
 
-The `safety-rails` CI job checks that bad combinations fail at render time, and for the expected reason: `env=production` with `kms.backend=local`, unknown or wrongly cased `env` / `kms.backend` values, production with an unpinned image tag (`dev`, `latest`, `main`, `X.Y`, `X`, or a chart dev version `X.Y.Z-dev.<sha>`) or a malformed digest, an agent with an unpinned image and no `image.allowMutableTag`, Vault Kubernetes auth with the SA token switched off, an agent without `clusterName`, an agent pointed at plain HTTP without `insecureTransport`, and, with `objectStore.enabled`, an empty bucket or region, `sse=aws:kms` without `kmsKeyId`, `kmsKeyId` with any other `sse`, an unknown `sse`, a prefix with an empty, `.` or `..` segment, a `logoBackfill` that isn't `true` or `false`, a malformed endpoint, a plain `http://` endpoint under `env=production`, and static object store keys with `kms.backend=aws-kms`. It also checks that pinned images (digest, `X.Y.Z`, `sha-<hex>`) still render. Add a case there whenever you add a guard.
+The `safety-rails` CI job checks that bad combinations fail at render time, and for the expected reason: `env=production` with `kms.backend=local`, unknown or wrongly cased `env` / `kms.backend` values, production with an unpinned image tag (`dev`, `latest`, `main`, `X.Y`, `X`, or a chart dev version `X.Y.Z-dev.<sha>`) or a malformed digest, an agent with an unpinned image and no `image.allowMutableTag`, Vault Kubernetes auth with the SA token switched off, an agent without `clusterName`, an agent pointed at plain HTTP without `insecureTransport`, and, with `objectStore.enabled`, an empty bucket or region, `sse=aws:kms` without `kmsKeyId`, `kmsKeyId` with any other `sse`, an unknown `sse`, a prefix with an empty, `.` or `..` segment, a `logoBackfill` that isn't `true` or `false`, a malformed endpoint, a plain `http://` endpoint under `env=production`, and static object store keys with `kms.backend=aws-kms`. For the gateway it checks an unpinned image, an `http://` or userinfo `cp.endpoint` or Argo CD `baseURL` (and a query or fragment on `baseURL`), a missing `identity.existingSecret`, no Argo CD connector, an `eso` or `rollout` connector list, a missing `tokenSecret` name or key, duplicate or non-DNS-label connector names, empty project or application lists, and NetworkPolicy without egress peers. It also checks that pinned images (digest, `X.Y.Z`, `sha-<hex>`) still render. Add a case there whenever you add a guard.
 
 `chart-publish.yml` keeps `appVersion` from `Chart.yaml` (`dev`) for charts built from `main` and sets it to `X.Y.Z` for a `vX.Y.Z` tag. Before `helm push` it runs `.github/scripts/check-image-refs.sh`, which fails the job if any image the packaged chart renders by default is missing from GHCR.
 
@@ -35,6 +38,7 @@ The `safety-rails` CI job checks that bad combinations fail at render time, and 
 - Keep the secure defaults: non-root pods, read-only root filesystems where possible, NetworkPolicy, minimal and namespaced RBAC.
 - Never put real credentials, account IDs or hostnames in `values.yaml` or examples. Use `example.com` hosts and `123456789012` account IDs.
 - The agent chart has no database or Redis settings, by design.
+- The gateway chart renders no RBAC and never mounts the ServiceAccount token in Release 1, and it has no switch for the Release 2 connector kinds.
 - When a chart change goes with an app change (new env var, new permission), link the PRs and release them together.
 
 ## Contributing
