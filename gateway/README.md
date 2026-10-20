@@ -32,13 +32,13 @@ It renders no Secret, no Role, ClusterRole or binding, no Service, Ingress or PV
 The pod never enrolls. You enroll once, outside the cluster, and store the result in a Secret.
 
 1. An admin with `gateway.mint` creates the Gateway in the console and mints a one-time enrollment token for it (the admin routes come with [api#293](https://github.com/secrets-bridge/api/issues/293)).
-2. Exchange the token for the credential. The Gateway binary has no `enroll` subcommand yet, so call the enrollment endpoint (`POST /api/v1/gateways/enroll`) directly. The response carries the secret once. This pipeline keeps the token and the secret off the command line, out of shell history and off disk, and writes only `gateway_id` and `gateway_secret` into the Secret:
+2. Exchange the token for the credential. The Gateway binary has no `enroll` subcommand yet, so call the enrollment endpoint (`POST /api/v1/gateways/enroll`) directly. The response carries the secret once. This pipeline keeps the token and the secret off the command line (`printf` is a shell builtin, so the token never appears in a process list), out of shell history and off disk, and writes only `gateway_id` and `gateway_secret` into the Secret:
 
 ```bash
 CP=https://cp.example.com
 kubectl create namespace tenant-a-uat
 read -rs SB_GATEWAY_ENROLL_TOKEN
-jq -n --arg t "$SB_GATEWAY_ENROLL_TOKEN" '{enrollment_token: $t, cluster_name: "tenant-a-uat"}' \
+printf '%s' "$SB_GATEWAY_ENROLL_TOKEN" | jq -Rc '{enrollment_token: ., cluster_name: "tenant-a-uat"}' \
   | curl -fsS -X POST "$CP/api/v1/gateways/enroll" \
       -H 'Content-Type: application/json' --data-binary @- \
   | jq -ce '{gateway_id, gateway_secret}' \
@@ -135,7 +135,7 @@ Each one fails `helm install` with a message that names the value, and each has 
 | Identity | `identity.existingSecret` is empty |
 | Connectors | `connectors.argocd` is empty; `connectors.eso` or `connectors.rollout` is set |
 | Each Argo CD connector | `name` is not a unique DNS label; `baseURL` is not `https://` (unless `insecureTransport=true`) or has userinfo, a query or a fragment; `tokenSecret.name` or `.key` is empty; `allowedProjects` or `applications` is empty; an application id is repeated or not a DNS label |
-| NetworkPolicy | with `networkPolicy.enabled=true`: `cp.egress.cidrs` is empty, a connector has neither `egress.cidrs` nor a selector, or a CIDR is malformed. There is no fallback to egress to anywhere |
+| NetworkPolicy | with `networkPolicy.enabled=true`: `cp.egress.cidrs` is empty, a connector has neither `egress.cidrs` nor a selector, a CIDR is malformed or is a `/0`, or a peer selects every pod (a selector with no `matchLabels` and no `matchExpressions` entries, with no narrower selector beside it). There is no fallback to egress to anywhere |
 
 ## Configuration
 
