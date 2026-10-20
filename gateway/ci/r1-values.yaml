@@ -1,0 +1,49 @@
+# CI preset: a valid Release 1 install with two Argo CD connectors, one
+# outside the cluster (CIDR peer, private CA) and one in-cluster
+# (selector peer). Placeholders only.
+image:
+  digest: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+cp:
+  endpoint: https://cp.example.com
+  egress:
+    cidrs: [192.0.2.10/32, 192.0.2.11/32]
+identity:
+  existingSecret: sb-gateway-identity
+connectors:
+  argocd:
+    - name: argocd-main
+      baseURL: https://argocd.example.com
+      tokenSecret:
+        name: sb-gateway-argocd-main
+        key: token
+      caSecret:
+        name: argocd-main-ca
+        key: ca.crt
+      timeout: 10s
+      allowedProjects: [tenant-a-uat]
+      applications:
+        - id: payments-api
+          name: payments-api
+        - id: payments-worker
+          name: payments-worker
+          appNamespace: tenant-a-uat
+      egress:
+        cidrs: [198.51.100.20/32]
+        port: 443
+    - name: argocd-local
+      baseURL: https://argocd-server.argocd.svc
+      tokenSecret:
+        name: sb-gateway-argocd-local
+        key: token
+      allowedProjects: [tenant-a-uat]
+      applications:
+        - id: orders-api
+          name: orders-api
+      egress:
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: argocd
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: argocd-server
+        port: 8080

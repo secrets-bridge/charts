@@ -1,0 +1,43 @@
+Secrets Bridge Gateway {{ .Chart.AppVersion }}, chart {{ .Chart.Version }}
+Release 1: read-only Argo CD rollout-state observation.
+
+Release:      {{ .Release.Name }}
+Namespace:    {{ .Release.Namespace }}
+CP endpoint:  {{ .Values.cp.endpoint }}
+Identity:     Secret "{{ .Values.identity.existingSecret }}", key "{{ .Values.identity.key }}" (read-only file, mode 0440)
+Connectors:   {{ range $i, $c := .Values.connectors.argocd }}{{ if $i }}, {{ end }}{{ $c.name }}{{ end }} (argocd)
+{{- if eq (toString .Values.insecureTransport) "true" }}
+
+  WARNING: insecureTransport=true. Plain HTTP is allowed to the control
+  plane and to Argo CD, and the Argo CD token can cross the network in
+  clear. Local development only.
+{{- end }}
+{{- if not .Values.networkPolicy.enabled }}
+
+  WARNING: networkPolicy.enabled=false. The Gateway's egress is not
+  restricted by this chart.
+{{- end }}
+
+The Gateway has no Kubernetes RBAC and no ServiceAccount token. It reads
+Argo CD only, through the connectors listed above.
+
+Enrollment happens once, outside the cluster, before this install. The
+pod never enrolls. If the identity Secret does not exist yet, the pod
+stays in ContainerCreating. See the chart README, section "Enrollment".
+
+Check the rollout:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "secrets-bridge-gateway.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "secrets-bridge-gateway.fullname" . }}
+
+Look for:
+  - "identity loaded"     the identity file was read
+  - "connectors bound"    the connectors file was accepted
+  - a 401 from the control plane: the Gateway stays up and not ready.
+    Revoke it in the console, enroll a new one and update the Secret.
+
+A replica turns ready only after the control plane accepted its
+heartbeat and catalog and every Argo CD self-check passed. Readiness is
+checked inside the pod with:
+
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "secrets-bridge-gateway.fullname" . }} -- /usr/local/bin/gateway healthcheck

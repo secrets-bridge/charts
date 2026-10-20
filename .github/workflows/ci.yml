@@ -28,6 +28,7 @@ on:
     paths:
       - 'secrets-bridge/**'
       - 'agent/**'
+      - 'gateway/**'
       - '.github/workflows/ci.yml'
       - '.github/scripts/**'
   pull_request:
@@ -35,6 +36,7 @@ on:
     paths:
       - 'secrets-bridge/**'
       - 'agent/**'
+      - 'gateway/**'
       - '.github/workflows/ci.yml'
       - '.github/scripts/**'
 
@@ -51,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        chart: [secrets-bridge, agent]
+        chart: [secrets-bridge, agent, gateway]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,6 +63,9 @@ jobs:
           version: ${{ env.HELM_VERSION }}
       - name: helm lint ${{ matrix.chart }}
         run: helm lint ${{ matrix.chart }}/
+      - name: helm lint gateway with its CI preset
+        if: matrix.chart == 'gateway'
+        run: helm lint --strict gateway/ -f gateway/ci/r1-values.yaml
 
   template:
     name: helm template + kubeconform
@@ -295,6 +300,53 @@ jobs:
             -ignore-missing-schemas \
             out/agent-ca.yaml
 
+      - name: Render + validate gateway (Release 1 preset)
+        # Two Argo CD connectors: one outside the cluster (CIDR peer,
+        # private CA), one in-cluster (selector peer).
+        run: |
+          f=out/gateway.yaml
+          helm template ci-gateway gateway/ \
+            --namespace tenant-a-uat \
+            -f gateway/ci/r1-values.yaml \
+            > $f
+          kubeconform -strict -summary $f
+          # Release 1 posture: no Secret data, no RBAC, no token, no
+          # Service, no R2 switch, NetworkPolicy present.
+          if grep -qE '^kind: (Secret|Role|ClusterRole|RoleBinding|ClusterRoleBinding|Service|Ingress|PersistentVolumeClaim)$' $f; then exit 1; fi
+          [ "$(grep -c 'automountServiceAccountToken: false' $f)" -eq 2 ]
+          if grep -q 'automountServiceAccountToken: true' $f; then exit 1; fi
+          grep -q '^kind: NetworkPolicy$' $f
+          grep -q 'ingress: \[\]' $f
+          if grep -qE 'SB_GATEWAY_ENABLE_R2_CONNECTORS|SB_GATEWAY_SECRET|SB_GATEWAY_ID\b|secretKeyRef|envFrom|containerPort' $f; then exit 1; fi
+          if grep -qE '"kind": "(eso|rollout)"' $f; then exit 1; fi
+          # Tokens are files, and the connectors file only names them.
+          grep -q '"token_file": "/etc/secrets-bridge/gateway/argocd/argocd-main/token"' $f
+          grep -q 'mountPath: /etc/secrets-bridge/gateway/argocd/argocd-main$' $f
+          if grep -q 'subPath:' $f; then exit 1; fi
+          grep -q 'defaultMode: 288' $f
+          grep -q 'fsGroup: 65532' $f
+          grep -q 'readOnlyRootFilesystem: true' $f
+          grep -q '"/usr/local/bin/gateway", "healthcheck", "--live"' $f
+          grep -q '^kind: PodDisruptionBudget$' $f
+
+      - name: Render + validate gateway (no NetworkPolicy, existing SA, private CP CA)
+        run: |
+          f=out/gateway-nonp.yaml
+          helm template ci-gateway-nonp gateway/ \
+            --namespace tenant-a-uat \
+            -f gateway/ci/r1-values.yaml \
+            --set image.digest= --set image.tag=0.1.0 \
+            --set networkPolicy.enabled=false \
+            --set-json 'cp.egress={"cidrs":[]}' \
+            --set serviceAccount.create=false --set serviceAccount.name=sb-gateway \
+            --set cp.caExistingSecret=cp-ca --set cp.tlsServerName=cp.example.com \
+            --set replicaCount=1 \
+            > $f
+          kubeconform -strict -summary $f
+          if grep -qE '^kind: (NetworkPolicy|ServiceAccount|PodDisruptionBudget)$' $f; then exit 1; fi
+          grep -q 'automountServiceAccountToken: false' $f
+          grep -A1 'name: SB_CP_CA_FILE' $f | grep -q '/etc/secrets-bridge/gateway/cp-ca/ca.crt'
+
       - name: Upload rendered manifests
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -323,6 +375,8 @@ jobs:
         --set objectStore.enabled=true --set objectStore.bucket=example-bucket
         --set objectStore.region=us-east-1
       DIGEST: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+      # A valid Release 1 gateway (pinned by digest, NetworkPolicy on).
+      GATEWAY: -f gateway/ci/r1-values.yaml
       # A valid enrollment (file-mode) agent, pinned.
       ENROLL: >-
         --set image.tag=0.1.0 --set identity.mode=file
@@ -567,6 +621,119 @@ jobs:
         run: |
           .github/scripts/expect-render.sh accept agent/ $AGENT $ENROLL --set identity.privateKeyFileName=
 
+      # Gateway (Release 1, Argo CD only). Each case changes one input of
+      # the valid $GATEWAY preset.
+      - name: gateway default (:dev) image must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'image resolves to tag "dev", which is not a pinned image' gateway/ \
+            $GATEWAY --set image.digest=
+
+      - name: gateway floating tag latest must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'image resolves to tag "latest", which is not a pinned image' gateway/ \
+            $GATEWAY --set image.digest= --set image.tag=latest
+
+      - name: gateway chart dev version (X.Y.Z-dev.<sha>) as tag must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'image resolves to tag "0.0.1-dev.0123abc", which is not a pinned image' gateway/ \
+            $GATEWAY --set image.digest= --set image.tag=0.0.1-dev.0123abc
+
+      - name: gateway repo@sha256 digest must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'image.digest="ghcr.io/secrets-bridge/gateway@sha256:' gateway/ \
+            $GATEWAY --set image.digest=ghcr.io/secrets-bridge/gateway@$DIGEST
+
+      - name: gateway pinned images (digest, X.Y.Z, sha-<hex>) and allowMutableTag must be accepted
+        run: |
+          .github/scripts/expect-render.sh accept gateway/ $GATEWAY
+          .github/scripts/expect-render.sh accept gateway/ $GATEWAY --set image.digest= --set image.tag=0.1.0
+          .github/scripts/expect-render.sh accept gateway/ $GATEWAY --set image.digest= --set image.tag=sha-0123abc
+          .github/scripts/expect-render.sh accept gateway/ $GATEWAY --set image.digest= --set image.allowMutableTag=true
+
+      - name: gateway without cp.endpoint must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'cp.endpoint is required' gateway/ \
+            $GATEWAY --set cp.endpoint=
+
+      - name: gateway plain HTTP cp.endpoint without insecureTransport must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'cp.endpoint="http://cp.example.com" is plain HTTP' gateway/ \
+            $GATEWAY --set cp.endpoint=http://cp.example.com
+          .github/scripts/expect-render.sh accept gateway/ \
+            $GATEWAY --set cp.endpoint=http://cp.example.com --set insecureTransport=true
+
+      - name: gateway cp.endpoint with userinfo must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'cp.endpoint must not carry userinfo' gateway/ \
+            $GATEWAY --set cp.endpoint=https://user:pass@cp.example.com
+
+      - name: gateway without identity.existingSecret must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'identity.existingSecret is required' gateway/ \
+            $GATEWAY --set identity.existingSecret=
+
+      - name: gateway without an Argo CD connector must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'connectors.argocd needs at least one entry' gateway/ \
+            $GATEWAY --set-json 'connectors.argocd=[]'
+
+      - name: gateway Release 2 connector kinds must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject "additional properties 'eso' not allowed" gateway/ \
+            $GATEWAY --set-json 'connectors.eso=[{"name":"eso-main"}]'
+          .github/scripts/expect-render.sh reject "additional properties 'rollout' not allowed" gateway/ \
+            $GATEWAY --set-json 'connectors.rollout=[{"name":"rollout-main"}]'
+
+      - name: gateway plain HTTP Argo CD baseURL without insecureTransport must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'connectors.argocd[0].baseURL="http://argocd.example.com" is plain HTTP' gateway/ \
+            $GATEWAY --set 'connectors.argocd[0].baseURL=http://argocd.example.com'
+
+      - name: gateway Argo CD baseURL with userinfo, query or fragment must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'connectors.argocd[0].baseURL must not carry userinfo' gateway/ \
+            $GATEWAY --set 'connectors.argocd[0].baseURL=https://admin:pw@argocd.example.com'
+          .github/scripts/expect-render.sh reject 'must not have a query string' gateway/ \
+            $GATEWAY --set 'connectors.argocd[0].baseURL=https://argocd.example.com/?token=x'
+          .github/scripts/expect-render.sh reject 'must not have a fragment' gateway/ \
+            $GATEWAY --set 'connectors.argocd[0].baseURL=https://argocd.example.com/#x'
+
+      - name: gateway Argo CD connector without tokenSecret name or key must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'connectors.argocd[0].tokenSecret.name and .key are required' gateway/ \
+            $GATEWAY --set 'connectors.argocd[0].tokenSecret.name='
+          .github/scripts/expect-render.sh reject 'connectors.argocd[1].tokenSecret.name and .key are required' gateway/ \
+            $GATEWAY --set 'connectors.argocd[1].tokenSecret.key='
+
+      - name: gateway duplicate or non-DNS-label connector names must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'connector name "argocd-main" is used more than once' gateway/ \
+            $GATEWAY --set 'connectors.argocd[1].name=argocd-main'
+          .github/scripts/expect-render.sh reject 'connectors.argocd[0].name="ArgoCD_Main" must be a DNS label' gateway/ \
+            $GATEWAY --set 'connectors.argocd[0].name=ArgoCD_Main'
+
+      - name: gateway Argo CD connector without projects or applications must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'connectors.argocd[0].allowedProjects must list at least one' gateway/ \
+            $GATEWAY --set-json 'connectors.argocd[0].allowedProjects=[]'
+          .github/scripts/expect-render.sh reject 'connectors.argocd[0].applications must list at least one' gateway/ \
+            $GATEWAY --set-json 'connectors.argocd[0].applications=[]'
+          .github/scripts/expect-render.sh reject 'applications id "payments-api" is used more than once' gateway/ \
+            $GATEWAY --set 'connectors.argocd[0].applications[1].id=payments-api'
+
+      - name: gateway NetworkPolicy without egress peers must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'networkPolicy.enabled=true requires cp.egress.cidrs' gateway/ \
+            $GATEWAY --set-json 'cp.egress={"cidrs":[]}'
+          .github/scripts/expect-render.sh reject 'networkPolicy.enabled=true requires connectors.argocd[1].egress.cidrs or' gateway/ \
+            $GATEWAY --set-json 'connectors.argocd[1].egress={"port":8080}'
+          .github/scripts/expect-render.sh reject 'cp.egress.cidrs entry "cp.example.com" is not a CIDR' gateway/ \
+            $GATEWAY --set-json 'cp.egress={"cidrs":["cp.example.com"]}'
+          # With the policy off, no peers are needed.
+          .github/scripts/expect-render.sh accept gateway/ \
+            $GATEWAY --set networkPolicy.enabled=false --set-json 'cp.egress={"cidrs":[]}' \
+            --set-json 'connectors.argocd[1].egress={}'
+
   agent-file-mode-overrides:
     name: agent file-mode overrides
     runs-on: ubuntu-latest
@@ -676,3 +843,12 @@ jobs:
             > out.yaml
           # Find any `  name: xxx` line where xxx is >63 chars
           awk '/^  name: / { n=$2; if (length(n) > 63) { print "TOO LONG ("length(n)"): "n; bad=1 } } END { exit bad?1:0 }' out.yaml
+
+      - name: render the gateway with a long release name
+        run: |
+          # 53 is the longest release name helm accepts.
+          LONG_NAME=$(printf 'a%.0s' {1..53})
+          helm template "$LONG_NAME" gateway/ -f gateway/ci/r1-values.yaml > gw.yaml
+          awk '/^  name: / { n=$2; if (length(n) > 63) { print "TOO LONG ("length(n)"): "n; bad=1 } } END { exit bad?1:0 }' gw.yaml
+          # The ConfigMap suffix survives the cut.
+          grep -qE '^  name: a{52}-connectors$' gw.yaml

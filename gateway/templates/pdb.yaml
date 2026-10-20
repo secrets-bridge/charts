@@ -1,0 +1,14 @@
+{{- if and .Values.podDisruptionBudget.enabled (ge (int .Values.replicaCount) 2) -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "secrets-bridge-gateway.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge-gateway.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "secrets-bridge-gateway.selectorLabels" . | nindent 6 }}
+{{- end -}}

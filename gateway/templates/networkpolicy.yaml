@@ -1,0 +1,57 @@
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secrets-bridge-gateway.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge-gateway.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "secrets-bridge-gateway.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  # The Gateway has no inbound listener; health and metrics stay on
+  # loopback and the probes run inside the container.
+  ingress: []
+  egress:
+    # DNS, to the cluster DNS pods only.
+    - to:
+        - namespaceSelector:
+            {{- toYaml (default (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")) .Values.networkPolicy.dns.namespaceSelector) | nindent 12 }}
+          podSelector:
+            {{- toYaml (default (dict "matchLabels" (dict "k8s-app" "kube-dns")) .Values.networkPolicy.dns.podSelector) | nindent 12 }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Control plane (cp.endpoint).
+    - to:
+        {{- range .Values.cp.egress.cidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - port: {{ int (default 443 .Values.cp.egress.port) }}
+          protocol: TCP
+    {{- range .Values.connectors.argocd }}
+    # Argo CD connector {{ .name }}.
+    - to:
+        {{- range .egress.cidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+        {{- if or .egress.namespaceSelector .egress.podSelector }}
+        {{- $peer := dict }}
+        {{- with .egress.namespaceSelector }}{{ $_ := set $peer "namespaceSelector" . }}{{ end }}
+        {{- with .egress.podSelector }}{{ $_ := set $peer "podSelector" . }}{{ end }}
+        - {{ toYaml $peer | indent 10 | trim }}
+        {{- end }}
+      ports:
+        - port: {{ int (default 443 .egress.port) }}
+          protocol: TCP
+    {{- end }}
+{{- end -}}

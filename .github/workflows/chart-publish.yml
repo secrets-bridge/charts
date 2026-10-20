@@ -1,10 +1,11 @@
 name: chart-publish
 
-# Publishes both Helm charts as OCI artifacts to GHCR.
+# Publishes every Helm chart as an OCI artifact to GHCR.
 #
 # Resulting registry URLs:
 #   oci://ghcr.io/secrets-bridge/charts/secrets-bridge
 #   oci://ghcr.io/secrets-bridge/charts/secrets-bridge-agent
+#   oci://ghcr.io/secrets-bridge/charts/secrets-bridge-gateway
 #
 # Versioning strategy (mirrors the image-publish convention from the
 # app repos, adapted to Helm OCI's immutable-version semantics):
@@ -66,6 +67,7 @@ on:
     paths:
       - 'secrets-bridge/**'
       - 'agent/**'
+      - 'gateway/**'
       - '.github/workflows/chart-publish.yml'
   workflow_dispatch:
 
@@ -89,7 +91,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        chart: [secrets-bridge, agent]
+        chart: [secrets-bridge, agent, gateway]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -175,9 +177,10 @@ jobs:
         env:
           TGZ: ${{ steps.package.outputs.tgz }}
           # A render that needs no image pins (env=dev for the control
-          # plane, allowMutableTag for the agent), so every image keeps
-          # its default reference for the check below.
-          RENDER_FLAGS: ${{ matrix.chart == 'agent' && '--set clusterName=ci --set cp.endpoint=https://x.example.com --set image.allowMutableTag=true' || '--set env=dev --set kms.backend=local --set ingress.host=x.example.com' }}
+          # plane, allowMutableTag for the agent and the gateway), so
+          # every image keeps its default reference for the check below.
+          # The gateway preset comes from the checkout (ci/ is not packaged).
+          RENDER_FLAGS: ${{ matrix.chart == 'agent' && '--set clusterName=ci --set cp.endpoint=https://x.example.com --set image.allowMutableTag=true' || matrix.chart == 'gateway' && '-f gateway/ci/r1-values.yaml --set image.digest= --set image.allowMutableTag=true' || '--set env=dev --set kms.backend=local --set ingress.host=x.example.com' }}
           RENDERED: ${{ runner.temp }}/rendered.yaml
         run: |
           # Belt-and-braces: verify the tarball helm just produced
@@ -261,7 +264,7 @@ jobs:
           {
             echo "### Charts"
             echo
-            for name in secrets-bridge secrets-bridge-agent; do
+            for name in secrets-bridge secrets-bridge-agent secrets-bridge-gateway; do
               # The digest of the pushed chart, read back from GHCR (the
               # charts are public, so an anonymous pull token is enough).
               token=$(curl -fsS "https://ghcr.io/token?scope=repository:${CHARTS#ghcr.io/}/${name}:pull" | jq -r .token)

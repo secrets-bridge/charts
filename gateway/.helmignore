@@ -1,0 +1,7 @@
+# CI presets live next to the chart but are not part of the package.
+ci/
+.DS_Store
+*.swp
+*.bak
+*.tmp
+*.orig

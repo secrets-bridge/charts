@@ -12,12 +12,13 @@
 
 # secrets-bridge / charts
 
-Two Helm charts, deployed to two different cluster boundaries.
+Three Helm charts. The control plane runs in one cluster; the agent and the optional Gateway run inside each customer boundary.
 
 | Chart | Where it runs | What it bundles |
 |---|---|---|
 | [**`secrets-bridge/`**](./secrets-bridge/) | **Control-plane cluster** (one per platform install) | `api` + `ui` + `worker` + `controller`, sharing one Ingress |
 | [**`agent/`**](./agent/) | **Every workload cluster** (one per target boundary) | Outbound-only execution agent |
+| [**`gateway/`**](./gateway/) | **Inside a customer boundary** (optional) | Outbound-only, read-only Argo CD rollout-state observation (Release 1) |
 
 The split is intentional. The agent has a different lifecycle (one per workload cluster, outbound-only, no Postgres/Redis), so it ships as its own chart rather than under the umbrella.
 
@@ -102,6 +103,14 @@ helm install agent ./agent \
   --set providers.vault.kubernetesRole=secrets-bridge-agent
 ```
 
+## Quick start: gateway
+
+The Gateway is optional. Release 1 observes Argo CD only, with no Kubernetes RBAC and no ServiceAccount token. Enroll it once outside the cluster, store the identity JSON and the read-only Argo CD token in Secrets, then install with a values file. See [`gateway/README.md`](./gateway/README.md) for the enrollment pipeline, the Argo CD account and a full values example.
+
+```bash
+helm install gateway ./gateway --namespace tenant-a-uat -f gateway-values.yaml
+```
+
 ## Safety rails (rendered before any pod boots)
 
 Both charts trip render-time errors on misconfigurations that would otherwise produce a `CrashLoopBackOff` later:
@@ -117,6 +126,7 @@ Both charts trip render-time errors on misconfigurations that would otherwise pr
 | `cp.endpoint=http://` without `cp.insecureTransport=true` | `agent` | fails template time |
 | Missing `clusterName` / `cp.endpoint` / `identity.existingSecret` | `agent` | fails template time |
 | Vault Kubernetes auth with `serviceAccount.automountServiceAccountToken=false` | `agent` | fails template time |
+| Unpinned image (as for the agent), `cp.endpoint` or an Argo CD `baseURL` that isn't `https://` without `insecureTransport=true` or carries userinfo, a query or a fragment, missing `identity.existingSecret`, no Argo CD connector, an `eso` or `rollout` connector, a connector without `tokenSecret` name and key, duplicate or non-DNS-label connector names, NetworkPolicy on without egress peers | `gateway` | fails template time |
 
 ## Pod rollout on Secret rotation
 
@@ -166,11 +176,27 @@ charts/
         ├── networkpolicy.yaml                opt-in egress-only (ingress: [])
         ├── pdb.yaml
         └── NOTES.txt
+│
+└── gateway/                                  Optional observation plane (Release 1: Argo CD only)
+    ├── Chart.yaml                            chart name: secrets-bridge-gateway
+    ├── values.yaml
+    ├── values.schema.json                    refuses unknown keys, including R2 connector kinds
+    ├── README.md
+    ├── ci/r1-values.yaml                     CI preset (not packaged)
+    └── templates/
+        ├── _helpers.tpl                      names, image, connectors file
+        ├── _validation.tpl                   render-time safety rails
+        ├── configmap-connectors.yaml         connectors file, no tokens
+        ├── deployment.yaml                   read-only Secret file mounts, exec probes
+        ├── serviceaccount.yaml               no RBAC, token not mounted
+        ├── networkpolicy.yaml                no ingress; egress to DNS, CP and Argo CD only
+        ├── pdb.yaml
+        └── NOTES.txt
 ```
 
 ## Operator references
 
-- **Full operator docs:** [`secrets-bridge/README.md`](./secrets-bridge/README.md) (CP), [`agent/README.md`](./agent/README.md) (agent)
+- **Full operator docs:** [`secrets-bridge/README.md`](./secrets-bridge/README.md) (CP), [`agent/README.md`](./agent/README.md) (agent), [`gateway/README.md`](./gateway/README.md) (Gateway)
 - **Doc site:** https://secrets-bridge.io. Recent additions: [Project environments](https://secrets-bridge.io/operations/project-environments/) + [Policy templates](https://secrets-bridge.io/operations/policy-templates/) (Slice L6)
 - **Platform overview:** https://github.com/secrets-bridge
 - **Release-process runbook:** each chart's `CHANGELOG.md`

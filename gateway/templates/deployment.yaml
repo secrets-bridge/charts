@@ -1,0 +1,203 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "secrets-bridge-gateway.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secrets-bridge-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "secrets-bridge-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "secrets-bridge-gateway.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Each replica reads its configuration once at boot, so a change
+        # rolls the pods.
+        checksum/connectors: {{ include "secrets-bridge-gateway.connectorsJSON" . | sha256sum }}
+        checksum/config: {{ printf "%s|%s|%s|%s|%s" .Values.cp.endpoint .Values.identity.existingSecret .Values.identity.key (default "" .Values.cp.caExistingSecret) (toString .Values.insecureTransport) | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "secrets-bridge-gateway.serviceAccountName" . }}
+      # Release 1 needs no Kubernetes API access. Set on the pod too, so
+      # serviceAccount.create=false (an existing or `default` SA) cannot
+      # hand the Gateway a token.
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: gateway
+          image: {{ include "secrets-bridge-gateway.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # No ports: the only listener is the loopback health and metrics
+          # server.
+          env:
+            - name: SB_CP_ENDPOINT
+              value: {{ .Values.cp.endpoint | quote }}
+            {{- if eq (toString .Values.insecureTransport) "true" }}
+            - name: SB_INSECURE_TRANSPORT
+              value: "true"
+            {{- end }}
+            {{- with .Values.cp.tlsServerName }}
+            - name: SB_CP_TLS_SERVER_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.cp.caExistingSecret }}
+            - name: SB_CP_CA_FILE
+              value: "{{ include "secrets-bridge-gateway.cpCADir" . }}/ca.crt"
+            {{- end }}
+            - name: SB_GATEWAY_IDENTITY_FILE
+              value: {{ include "secrets-bridge-gateway.identityFile" . | quote }}
+            - name: SB_GATEWAY_CONNECTORS_FILE
+              value: {{ include "secrets-bridge-gateway.connectorsFile" . | quote }}
+            - name: SB_GATEWAY_LOCAL_ADDR
+              value: {{ include "secrets-bridge-gateway.localAddr" . | quote }}
+            - name: SB_LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            {{- with .Values.shutdownGrace }}
+            - name: SB_GATEWAY_SHUTDOWN_GRACE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.cp.heartbeatInterval }}
+            - name: SB_GATEWAY_HEARTBEAT_INTERVAL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.cp.claimInterval }}
+            - name: SB_GATEWAY_CLAIM_INTERVAL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.cp.claimIdleMax }}
+            - name: SB_GATEWAY_CLAIM_IDLE_MAX
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.cp.claimConcurrency }}
+            - name: SB_GATEWAY_CLAIM_CONCURRENCY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.cp.leaseMargin }}
+            - name: SB_GATEWAY_LEASE_MARGIN
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.cp.passTimeout }}
+            - name: SB_GATEWAY_PASS_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.cp.unreachableAfter }}
+            - name: SB_GATEWAY_CP_UNREACHABLE_AFTER
+              value: {{ . | quote }}
+            {{- end }}
+          livenessProbe:
+            exec:
+              command: ["/usr/local/bin/gateway", "healthcheck", "--live", "--local-addr", {{ include "secrets-bridge-gateway.localAddr" . | quote }}, "--timeout", "2s"]
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["/usr/local/bin/gateway", "healthcheck", "--local-addr", {{ include "secrets-bridge-gateway.localAddr" . | quote }}, "--timeout", "2s"]
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: identity
+              mountPath: {{ include "secrets-bridge-gateway.identityDir" . }}
+              readOnly: true
+            - name: connectors
+              mountPath: {{ include "secrets-bridge-gateway.configDir" . }}
+              readOnly: true
+            {{- if .Values.cp.caExistingSecret }}
+            - name: cp-ca
+              mountPath: {{ include "secrets-bridge-gateway.cpCADir" . }}
+              readOnly: true
+            {{- end }}
+            # Argo CD tokens: directory mounts (no subPath), so a rotated
+            # token reaches the pod without a restart.
+            {{- range $i, $c := .Values.connectors.argocd }}
+            - name: argocd-token-{{ $i }}
+              mountPath: {{ include "secrets-bridge-gateway.argocdDir" $ }}/{{ $c.name }}
+              readOnly: true
+            {{- if and $c.caSecret $c.caSecret.name }}
+            - name: argocd-ca-{{ $i }}
+              mountPath: {{ include "secrets-bridge-gateway.argocdCADir" $ }}/{{ $c.name }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
+      volumes:
+        # Secret files are owned by root with group fsGroup; 0440 is group
+        # read only, which the Gateway accepts for its identity file.
+        - name: identity
+          secret:
+            secretName: {{ .Values.identity.existingSecret | quote }}
+            defaultMode: 288 # 0440
+            items:
+              - key: {{ .Values.identity.key | quote }}
+                path: identity.json
+        - name: connectors
+          configMap:
+            name: {{ include "secrets-bridge-gateway.connectorsConfigMapName" . }}
+            defaultMode: 292 # 0444
+            items:
+              - key: connectors.json
+                path: connectors.json
+        {{- if .Values.cp.caExistingSecret }}
+        - name: cp-ca
+          secret:
+            secretName: {{ .Values.cp.caExistingSecret | quote }}
+            defaultMode: 288 # 0440
+            items:
+              - key: {{ .Values.cp.caExistingSecretKey | quote }}
+                path: ca.crt
+        {{- end }}
+        {{- range $i, $c := .Values.connectors.argocd }}
+        - name: argocd-token-{{ $i }}
+          secret:
+            secretName: {{ $c.tokenSecret.name | quote }}
+            defaultMode: 288 # 0440
+            items:
+              - key: {{ $c.tokenSecret.key | quote }}
+                path: token
+        {{- if and $c.caSecret $c.caSecret.name }}
+        - name: argocd-ca-{{ $i }}
+          secret:
+            secretName: {{ $c.caSecret.name | quote }}
+            defaultMode: 288 # 0440
+            items:
+              - key: {{ $c.caSecret.key | quote }}
+                path: ca.crt
+        {{- end }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
