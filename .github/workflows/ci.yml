@@ -734,6 +734,24 @@ jobs:
             $GATEWAY --set networkPolicy.enabled=false --set-json 'cp.egress={"cidrs":[]}' \
             --set-json 'connectors.argocd[1].egress={}'
 
+      - name: gateway NetworkPolicy peers that allow everything must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'cp.egress.cidrs entry "0.0.0.0/0" allows every address' gateway/ \
+            $GATEWAY --set-json 'cp.egress={"cidrs":["0.0.0.0/0"]}'
+          .github/scripts/expect-render.sh reject 'connectors.argocd[0].egress.cidrs entry "::/0" allows every address' gateway/ \
+            $GATEWAY --set-json 'connectors.argocd[0].egress={"cidrs":["::/0"]}'
+          .github/scripts/expect-render.sh reject 'connectors.argocd[1].egress selects every pod' gateway/ \
+            $GATEWAY --set-json 'connectors.argocd[1].egress={"namespaceSelector":{"matchLabels":{}}}'
+          .github/scripts/expect-render.sh reject 'connectors.argocd[1].egress selects every pod' gateway/ \
+            $GATEWAY --set-json 'connectors.argocd[1].egress={"podSelector":{"matchExpressions":[]}}'
+          .github/scripts/expect-render.sh reject 'connectors.argocd[1].egress selects every pod' gateway/ \
+            $GATEWAY --set-json 'connectors.argocd[1].egress={"namespaceSelector":{"matchLabels":{}},"podSelector":{"matchLabels":{}}}'
+          # Specific pods in any namespace, or a whole named namespace, are fine.
+          .github/scripts/expect-render.sh accept gateway/ \
+            $GATEWAY --set-json 'connectors.argocd[1].egress={"namespaceSelector":{"matchLabels":{}},"podSelector":{"matchLabels":{"app.kubernetes.io/name":"argocd-server"}}}'
+          .github/scripts/expect-render.sh accept gateway/ \
+            $GATEWAY --set-json 'connectors.argocd[1].egress={"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"argocd"}}}'
+
   agent-file-mode-overrides:
     name: agent file-mode overrides
     runs-on: ubuntu-latest

@@ -35,6 +35,12 @@ guard has a case in the safety-rails CI job.
 {{- end -}}
 {{- end -}}
 
+{{- /* "true" when a label selector has no matchLabels and no
+     matchExpressions entries, which matches every object. */ -}}
+{{- define "secrets-bridge-gateway.selectsAll" -}}
+{{- if and (empty (default (dict) .matchLabels)) (empty (default (list) .matchExpressions)) -}}true{{- end -}}
+{{- end -}}
+
 {{- define "secrets-bridge-gateway.validateEgress" -}}
 {{- /* args: list <field> <egress dict> <allowSelectors> */ -}}
 {{- $field := index . 0 -}}
@@ -52,6 +58,19 @@ guard has a case in the safety-rails CI job.
 {{- range $cidrs -}}
 {{- if not (regexMatch (include "secrets-bridge-gateway.cidrRegex" $) (toString .)) -}}
 {{- fail (printf "secrets-bridge-gateway: %s.cidrs entry %q is not a CIDR (for example 192.0.2.10/32)." $field (toString .)) -}}
+{{- end -}}
+{{- if hasSuffix "/0" (toString .) -}}
+{{- fail (printf "secrets-bridge-gateway: %s.cidrs entry %q allows every address. List the addresses the endpoint resolves to, or set networkPolicy.enabled=false." $field (toString .)) -}}
+{{- end -}}
+{{- end -}}
+{{- /* A selector with no matchLabels and no matchExpressions entries
+     selects everything, so a peer made only of such selectors is egress
+     to every pod (in this namespace, or in all of them). */ -}}
+{{- if $hasSelector -}}
+{{- $nsAll := and $e.namespaceSelector (include "secrets-bridge-gateway.selectsAll" $e.namespaceSelector) -}}
+{{- $podAll := and $e.podSelector (include "secrets-bridge-gateway.selectsAll" $e.podSelector) -}}
+{{- if or (and $nsAll (or (not $e.podSelector) $podAll)) (and $podAll (not $e.namespaceSelector)) -}}
+{{- fail (printf "secrets-bridge-gateway: %s selects every pod (a selector needs at least one matchLabels or matchExpressions entry). Name the namespace and pods of the endpoint." $field) -}}
 {{- end -}}
 {{- end -}}
 {{- $port := int (default 443 $e.port) -}}
