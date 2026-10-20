@@ -31,7 +31,7 @@ It renders no Secret, no Role, ClusterRole or binding, no Service, Ingress or PV
 
 The pod never enrolls. You enroll once, outside the cluster, and store the result in a Secret.
 
-1. An admin with `gateway.mint` creates the Gateway in the console and mints a one-time enrollment token for it (the admin routes come with [api#293](https://github.com/secrets-bridge/api/issues/293)).
+1. An admin with `gateway.mint` creates the Gateway in the console and mints a one-time enrollment token for it (the admin routes are in the api since [api#295](https://github.com/secrets-bridge/api/pull/295); until the console page lands in [ui#163](https://github.com/secrets-bridge/ui/issues/163), use the steps in the [Gateway operations guide](https://secrets-bridge.io/latest/operations/gateway/)).
 2. Exchange the token for the credential. The Gateway binary has no `enroll` subcommand yet, so call the enrollment endpoint (`POST /api/v1/gateways/enroll`) directly. The response carries the secret once. This pipeline keeps the token and the secret off the command line (`printf` is a shell builtin, so the token never appears in a process list), out of shell history and off disk, and writes only `gateway_id` and `gateway_secret` into the Secret:
 
 ```bash
