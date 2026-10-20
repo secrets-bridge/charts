@@ -25,7 +25,7 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-    # Postgres / Redis / KMS / the notification webhook target — see
+    # Postgres / Redis / the notification webhook target, see
     # `worker.networkPolicy.egress.extraRules` in values.yaml.
     {{- with .Values.worker.networkPolicy.egress.extraRules }}
     {{- toYaml . | nindent 4 }}

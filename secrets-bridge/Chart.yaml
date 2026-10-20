@@ -1,9 +1,9 @@
 apiVersion: v2
 name: secrets-bridge
 description: |
-  Secrets Bridge control plane — the api (Fiber/Go), worker (sweepers +
-  GitOps poller), ui (React SPA), and controller (Kubernetes
-  reconciler), bundled in one chart with a shared ingress.
+  Secrets Bridge control plane: the api (Fiber/Go), worker
+  (sweepers), ui (React SPA), and controller (Kubernetes reconciler),
+  bundled in one chart with a shared ingress.
 
   The agent runs in workload clusters under a separate `agent` chart;
   the control plane stays in one operator-friendly install.
@@ -48,6 +48,20 @@ annotations:
     - name: Repository
       url: https://github.com/secrets-bridge
   artifacthub.io/changes: |
+    - kind: removed
+      description: |
+        api and worker: the GitOps poller values are gone. The Gateway is
+        the only component that talks to Argo CD (secrets-bridge/gateway#13).
+        api.config.gitopsEnabled, worker.config.gitopsEnabled and the
+        worker.config.gitops* intervals and batch size no longer exist, and
+        SB_GITOPS_ENABLED and SB_WORKER_GITOPS_* are no longer rendered.
+        The worker no longer gets SB_KMS_* env and needs no KMS access.
+    - kind: added
+      description: |
+        worker: worker.config.gatewaySweepers (off by default) renders
+        SB_WORKER_GATEWAY_SWEEPERS_ENABLED and the observation, gateways
+        and gateway-replicas sweeper settings. Turn it on whenever any
+        environment's observation source is gateway.
     - kind: added
       description: |
         api: objectStore.logoBackfill (default true) renders

@@ -548,6 +548,40 @@ jobs:
           .github/scripts/expect-render.sh accept secrets-bridge/ $PROD $PINNED \
             --set objectStore.sse=aes256 --set objectStore.endpoint=http://s3.example.com
 
+      # gateway#13: the Gateway is the only Argo CD client. The GitOps
+      # switches are gone and stay gone even when an old values file
+      # still sets them, and the worker gets no KMS env.
+      - name: GitOps poller env and worker KMS env must not render
+        run: |
+          mkdir -p out
+          f=out/no-gitops.yaml
+          helm template r secrets-bridge/ $PROD $PINNED \
+            --set api.config.gitopsEnabled=true --set worker.config.gitopsEnabled=true \
+            --set worker.config.gitopsPollInterval=15s --set worker.config.gitopsBatchSize=20 \
+            > $f
+          if grep -qE 'SB_GITOPS_ENABLED|SB_WORKER_GITOPS_|SB_ALLOW_INSECURE_ARGOCD_ADDR' $f; then
+            echo "::error::a retired GitOps setting is still rendered"; exit 1
+          fi
+          helm template r secrets-bridge/ $PROD $PINNED \
+            --show-only templates/worker/deployment.yaml > out/no-gitops-worker.yaml
+          if grep -q 'SB_KMS_' out/no-gitops-worker.yaml; then
+            echo "::error::the worker still gets SB_KMS_* env"; exit 1
+          fi
+          # The api keeps its KMS env.
+          helm template r secrets-bridge/ $PROD $PINNED \
+            --show-only templates/api/deployment.yaml | grep -A1 'name: SB_KMS_BACKEND' | grep -q '"aws-kms"'
+          # Gateway sweepers: off by default with no tuning env, and the
+          # tuning env only when switched on.
+          grep -A1 'name: SB_WORKER_GATEWAY_SWEEPERS_ENABLED' out/no-gitops-worker.yaml | grep -q '"false"'
+          if grep -qE 'SB_WORKER_(OBSERVATION|GATEWAYS|GATEWAY_REPLICAS)_' out/no-gitops-worker.yaml; then exit 1; fi
+          helm template r secrets-bridge/ $PROD $PINNED \
+            --set worker.config.gatewaySweepers.enabled=true \
+            --show-only templates/worker/deployment.yaml > out/gw-sweepers-worker.yaml
+          grep -A1 'name: SB_WORKER_GATEWAY_SWEEPERS_ENABLED' out/gw-sweepers-worker.yaml | grep -q '"true"'
+          grep -A1 'name: SB_WORKER_OBSERVATION_LEASES_INTERVAL' out/gw-sweepers-worker.yaml | grep -q '"30s"'
+          grep -A1 'name: SB_WORKER_GATEWAYS_STALE_AFTER' out/gw-sweepers-worker.yaml | grep -q '"2m"'
+          grep -A1 'name: SB_WORKER_GATEWAY_REPLICAS_RETENTION' out/gw-sweepers-worker.yaml | grep -q '"24h"'
+
       - name: agent missing clusterName must be rejected
         run: |
           .github/scripts/expect-render.sh reject 'clusterName is required' agent/ \
