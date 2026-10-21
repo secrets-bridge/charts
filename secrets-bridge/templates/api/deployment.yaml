@@ -135,13 +135,17 @@ spec:
             */}}
             {{- with .Values.api.config.mfa }}
             {{- /*
-              Slice K — login-time MFA gate. Default false renders
-              no env var so existing step-up-only deployments are
-              byte-for-byte unchanged.
+              Slice K login-time MFA gate. Rendered only for an explicit
+              true or false: left unset, the api takes its default from
+              the SB_ENV above (on for production, off for dev), and a
+              value in secrets.existingSecret still applies, since an
+              env entry would override envFrom.
             */}}
-            {{- if .requireMFAAtLogin }}
+            {{- if kindIs "bool" .requireMFAAtLogin }}
             - name: SB_REQUIRE_MFA_AT_LOGIN
-              value: "true"
+              value: {{ .requireMFAAtLogin | quote }}
+            {{- else if not (kindIs "invalid" .requireMFAAtLogin) }}
+            {{- fail (printf "secrets-bridge: api.config.mfa.requireMFAAtLogin must be true, false or unset, got %s %q. A quoted \"false\" or a 0 would otherwise be ignored." (kindOf .requireMFAAtLogin) (toString .requireMFAAtLogin)) }}
             {{- end }}
             {{- with .totpIssuer }}
             - name: SB_MFA_TOTP_ISSUER

@@ -381,22 +381,24 @@ api:
     # only enrollable factor.
     mfa:
       # SB_REQUIRE_MFA_AT_LOGIN (Slice K).
-      # When true, EVERY authenticated route requires the session
-      # to have been MFA-verified at least once (not just the
-      # Tier-2 approve / reject / reveal paths). The SPA's onError
-      # interceptor opens the step-up modal immediately after sign-
-      # in; users with no factor enrolled are routed to /me/mfa.
-      # When false (DEFAULT), the existing step-up-only model
-      # applies — Tier-1 browsing only needs a session cookie.
+      # When on, EVERY authenticated route requires the session to
+      # have been MFA-verified at least once (not just the Tier-2
+      # approve / reject / reveal paths). The SPA's onError
+      # interceptor opens the step-up modal right after sign-in;
+      # users with no factor enrolled are sent to /me/mfa.
+      #
+      # Unset (the default) renders nothing: the api is on for
+      # env=production and off for env=dev, and a value in
+      # secrets.existingSecret still applies. With it off, an account
+      # with no second factor can add its first one from the session
+      # alone and then pass step-up, so step-up protects nothing for
+      # it. true or false here is rendered and wins over the Secret.
+      # Anything else (a quoted "false", 0) fails the render.
       #
       # Carve-outs the api keeps open regardless: /users/me,
-      # /users/me/mfa/*, /auth/logout, /auth/mfa/{challenge,verify}
-      # — without those the gate would be self-locking.
-      #
-      # Operators who want the AWS-console / GitHub-org-2FA-required
-      # posture flip this on. Deployments comfortable with step-up-
-      # only on the value-bearing actions leave it off.
-      requireMFAAtLogin: false
+      # /users/me/mfa/*, /auth/logout, /auth/mfa/{challenge,verify},
+      # without which the gate would lock itself.
+      requireMFAAtLogin: null
 
       # SB_MFA_TOTP_ISSUER — rendered into the otpauth:// URI's
       # `issuer=` param + the label prefix. Authenticator apps
