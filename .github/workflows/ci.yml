@@ -582,6 +582,17 @@ jobs:
           grep -A1 'name: SB_WORKER_GATEWAYS_STALE_AFTER' out/gw-sweepers-worker.yaml | grep -q '"2m"'
           grep -A1 'name: SB_WORKER_GATEWAY_REPLICAS_RETENTION' out/gw-sweepers-worker.yaml | grep -q '"24h"'
 
+      # skills#105: login-time MFA is on unless env=dev, and an explicit
+      # value wins either way. The api always gets the resulting value.
+      - name: SB_REQUIRE_MFA_AT_LOGIN follows env unless set
+        run: |
+          mfa() { helm template r secrets-bridge/ "$@" --show-only templates/api/deployment.yaml \
+            | grep -A1 'name: SB_REQUIRE_MFA_AT_LOGIN' | grep -oE '"(true|false)"'; }
+          [ "$(mfa $PROD $PINNED)" = '"true"' ] || { echo "::error::production must default to true"; exit 1; }
+          [ "$(mfa $PROD $PINNED --set api.config.mfa.requireMFAAtLogin=false)" = '"false"' ] || { echo "::error::an explicit false must win in production"; exit 1; }
+          [ "$(mfa --set env=dev --set kms.backend=local --set ingress.host=x.example.com)" = '"false"' ] || { echo "::error::dev must default to false"; exit 1; }
+          [ "$(mfa --set env=dev --set kms.backend=local --set ingress.host=x.example.com --set api.config.mfa.requireMFAAtLogin=true)" = '"true"' ] || { echo "::error::an explicit true must win in dev"; exit 1; }
+
       - name: agent missing clusterName must be rejected
         run: |
           .github/scripts/expect-render.sh reject 'clusterName is required' agent/ \

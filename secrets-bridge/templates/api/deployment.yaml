@@ -135,14 +135,16 @@ spec:
             */}}
             {{- with .Values.api.config.mfa }}
             {{- /*
-              Slice K — login-time MFA gate. Default false renders
-              no env var so existing step-up-only deployments are
-              byte-for-byte unchanged.
+              Slice K login-time MFA gate (skills#105). Unset means on
+              for env=production and off otherwise; a true or false in
+              values wins. Always rendered, so the pod states it.
             */}}
-            {{- if .requireMFAAtLogin }}
-            - name: SB_REQUIRE_MFA_AT_LOGIN
-              value: "true"
+            {{- $requireMFAAtLogin := eq $.Values.env "production" }}
+            {{- if kindIs "bool" .requireMFAAtLogin }}
+            {{- $requireMFAAtLogin = .requireMFAAtLogin }}
             {{- end }}
+            - name: SB_REQUIRE_MFA_AT_LOGIN
+              value: {{ $requireMFAAtLogin | quote }}
             {{- with .totpIssuer }}
             - name: SB_MFA_TOTP_ISSUER
               value: {{ . | quote }}
