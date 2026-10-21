@@ -582,16 +582,25 @@ jobs:
           grep -A1 'name: SB_WORKER_GATEWAYS_STALE_AFTER' out/gw-sweepers-worker.yaml | grep -q '"2m"'
           grep -A1 'name: SB_WORKER_GATEWAY_REPLICAS_RETENTION' out/gw-sweepers-worker.yaml | grep -q '"24h"'
 
-      # skills#105: login-time MFA is on unless env=dev, and an explicit
-      # value wins either way. The api always gets the resulting value.
-      - name: SB_REQUIRE_MFA_AT_LOGIN follows env unless set
+      # Login-time MFA: unset renders nothing (the api defaults from
+      # SB_ENV and the env Secret still applies), an explicit bool is
+      # rendered, and anything else fails the render.
+      - name: SB_REQUIRE_MFA_AT_LOGIN renders only an explicit bool
         run: |
           mfa() { helm template r secrets-bridge/ "$@" --show-only templates/api/deployment.yaml \
-            | grep -A1 'name: SB_REQUIRE_MFA_AT_LOGIN' | grep -oE '"(true|false)"'; }
-          [ "$(mfa $PROD $PINNED)" = '"true"' ] || { echo "::error::production must default to true"; exit 1; }
-          [ "$(mfa $PROD $PINNED --set api.config.mfa.requireMFAAtLogin=false)" = '"false"' ] || { echo "::error::an explicit false must win in production"; exit 1; }
-          [ "$(mfa --set env=dev --set kms.backend=local --set ingress.host=x.example.com)" = '"false"' ] || { echo "::error::dev must default to false"; exit 1; }
-          [ "$(mfa --set env=dev --set kms.backend=local --set ingress.host=x.example.com --set api.config.mfa.requireMFAAtLogin=true)" = '"true"' ] || { echo "::error::an explicit true must win in dev"; exit 1; }
+            | grep -A1 'name: SB_REQUIRE_MFA_AT_LOGIN' | grep -oE '"(true|false)"' || echo unset; }
+          DEV="--set env=dev --set kms.backend=local --set ingress.host=x.example.com"
+          [ "$(mfa $PROD $PINNED)" = unset ] || { echo "::error::production unset must leave it to the api and the Secret"; exit 1; }
+          [ "$(mfa $DEV)" = unset ] || { echo "::error::dev unset must leave it to the api and the Secret"; exit 1; }
+          [ "$(mfa $PROD $PINNED --set api.config.mfa.requireMFAAtLogin=false)" = '"false"' ] || { echo "::error::an explicit false must render"; exit 1; }
+          [ "$(mfa $DEV --set api.config.mfa.requireMFAAtLogin=true)" = '"true"' ] || { echo "::error::an explicit true must render"; exit 1; }
+
+      - name: a non-boolean requireMFAAtLogin must be rejected
+        run: |
+          .github/scripts/expect-render.sh reject 'requireMFAAtLogin must be true, false or unset, got string "false"' secrets-bridge/ \
+            $PROD $PINNED --set-string api.config.mfa.requireMFAAtLogin=false
+          .github/scripts/expect-render.sh reject 'requireMFAAtLogin must be true, false or unset' secrets-bridge/ \
+            $PROD $PINNED --set api.config.mfa.requireMFAAtLogin=0
 
       - name: agent missing clusterName must be rejected
         run: |

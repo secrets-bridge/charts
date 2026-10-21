@@ -387,12 +387,13 @@ api:
       # interceptor opens the step-up modal right after sign-in;
       # users with no factor enrolled are sent to /me/mfa.
       #
-      # Unset (the default): on for env=production, off for env=dev
-      # (skills#105). With it off, an account with no second factor
-      # can add its first one from the session alone and then pass
-      # step-up, so step-up protects nothing for it. Set true or
-      # false to force it either way; the chart always renders the
-      # resulting value.
+      # Unset (the default) renders nothing: the api is on for
+      # env=production and off for env=dev, and a value in
+      # secrets.existingSecret still applies. With it off, an account
+      # with no second factor can add its first one from the session
+      # alone and then pass step-up, so step-up protects nothing for
+      # it. true or false here is rendered and wins over the Secret.
+      # Anything else (a quoted "false", 0) fails the render.
       #
       # Carve-outs the api keeps open regardless: /users/me,
       # /users/me/mfa/*, /auth/logout, /auth/mfa/{challenge,verify},
