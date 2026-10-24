@@ -92,6 +92,11 @@ charts; keep them in sync.
 ^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$
 {{- end -}}
 
+{{/* An Argo CD Application metadata.uid: a lower-case UUID, as the Gateway checks it. */}}
+{{- define "secrets-bridge-gateway.uidRegex" -}}
+^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+{{- end -}}
+
 {{/* An IPv4 or IPv6 CIDR, loosely; the API server checks the rest. */}}
 {{- define "secrets-bridge-gateway.cidrRegex" -}}
 ^[0-9a-fA-F:.]+/[0-9]{1,3}$
@@ -140,6 +145,9 @@ paths only. Tokens stay in their Secrets and reach the pod as files.
 {{- $app := dict "id" $a.id "name" $a.name -}}
 {{- with $a.appNamespace -}}
 {{- $_ := set $app "app_namespace" . -}}
+{{- end -}}
+{{- with $a.uid -}}
+{{- $_ := set $app "uid" . -}}
 {{- end -}}
 {{- $apps = append $apps $app -}}
 {{- end -}}

@@ -122,6 +122,27 @@ For an Argo CD in the same cluster, use selectors instead of CIDRs. `argocd-serv
         port: 8080
 ```
 
+#### Pin each Application's uid
+
+Set `applications[].uid` to the Application's `metadata.uid` for every target. It is optional, but without it each replica learns the uid on its own first read and keeps it only in memory. If the Application is deleted and recreated under the same name and the pod then restarts or rolls out, the new replica pins the new object without noticing the change. With `uid` set, every replica checks it from its first read, across restarts. A read that returns another uid is answered with an `error` observation, code `target_identity_changed`, and carries nothing from the new object. The uid stays in the connectors ConfigMap inside your cluster; evidence sent to the control plane carries only a digest of it.
+
+Read the uid with a read-only call, for example:
+
+```bash
+kubectl get application -n argocd payments-api -o jsonpath='{.metadata.uid}'
+```
+
+Use the namespace the Application lives in (`argocd`, or its `appNamespace`). In the Argo CD UI, open the Application's details and read `metadata.uid` from its live manifest. Then add it to the values:
+
+```yaml
+      applications:
+        - id: payments-api
+          name: payments-api
+          uid: 6f1c2c1e-0000-4000-8000-0000000000a1   # metadata.uid, lower-case UUID
+```
+
+When you recreate an Application on purpose, read the new uid and update the value. Leave `uid` unset or empty to keep the per-process pin.
+
 A replica turns ready once the control plane has accepted its heartbeat and catalog and every Argo CD self-check (`GET /api/v1/session/userinfo`) has passed. A 401 from the control plane leaves the pod running and not ready, with the reason in the log.
 
 ## Render-time guards
@@ -134,7 +155,7 @@ Each one fails `helm install` with a message that names the value, and each has 
 | Control plane | `cp.endpoint` is empty, not `https://` (plain `http://` needs `insecureTransport=true`), or carries userinfo, a query or a fragment |
 | Identity | `identity.existingSecret` is empty |
 | Connectors | `connectors.argocd` is empty; `connectors.eso` or `connectors.rollout` is set |
-| Each Argo CD connector | `name` is not a unique DNS label; `baseURL` is not `https://` (unless `insecureTransport=true`) or has userinfo, a query or a fragment; `tokenSecret.name` or `.key` is empty; `allowedProjects` or `applications` is empty; an application id is repeated or not a DNS label |
+| Each Argo CD connector | `name` is not a unique DNS label; `baseURL` is not `https://` (unless `insecureTransport=true`) or has userinfo, a query or a fragment; `tokenSecret.name` or `.key` is empty; `allowedProjects` or `applications` is empty; an application id is repeated or not a DNS label; an application `uid` is set and is not a lower-case UUID |
 | NetworkPolicy | with `networkPolicy.enabled=true`: `cp.egress.cidrs` is empty, a connector has neither `egress.cidrs` nor a selector, a CIDR is malformed or is a `/0`, or a peer selects every pod (a selector with no `matchLabels` and no `matchExpressions` entries, with no narrower selector beside it). There is no fallback to egress to anywhere |
 
 ## Configuration
@@ -156,7 +177,7 @@ Each one fails `helm install` with a message that names the value, and each has 
 | `cp.egress.cidrs` / `cp.egress.port` | `[]` / `443` | NetworkPolicy peer for the control plane |
 | `identity.existingSecret` | required | Secret with the identity JSON |
 | `identity.key` | `identity.json` | key in that Secret |
-| `connectors.argocd[]` | `[]` | `name`, `baseURL`, `tokenSecret{name,key}`, optional `caSecret{name,key}`, `tlsServerName`, `timeout` (1s to 60s), `allowedProjects`, `applications[]{id,name,appNamespace}`, `egress{cidrs,namespaceSelector,podSelector,port}` |
+| `connectors.argocd[]` | `[]` | `name`, `baseURL`, `tokenSecret{name,key}`, optional `caSecret{name,key}`, `tlsServerName`, `timeout` (1s to 60s), `allowedProjects`, `applications[]{id,name,appNamespace,uid}` (`uid` optional, see [Pin each Application's uid](#pin-each-applications-uid)), `egress{cidrs,namespaceSelector,podSelector,port}` |
 | `networkPolicy.enabled` | `true` | |
 | `networkPolicy.dns.namespaceSelector` / `podSelector` | kube-system / `k8s-app: kube-dns` | where DNS traffic may go |
 | `serviceAccount.create` / `name` / `annotations` | `true` / empty / `{}` | the token is never mounted either way |
