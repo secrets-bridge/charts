@@ -131,6 +131,8 @@ connectors:
   #     - id: payments-api            # local target id the control plane names
   #       name: payments-api          # Argo CD Application name
   #       appNamespace: ""            # for apps in any namespace
+  #       uid: ""                     # optional: the Application's metadata.uid (lower-case UUID),
+  #                                   #   so a recreated Application is refused on every replica
   #   egress:                         # NetworkPolicy peer, required while networkPolicy.enabled
   #     cidrs: []                     # for an Argo CD outside the cluster, e.g. [198.51.100.20/32]
   #     namespaceSelector: {}         # for an in-cluster argocd-server, e.g.

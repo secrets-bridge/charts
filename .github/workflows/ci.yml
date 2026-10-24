@@ -322,6 +322,9 @@ jobs:
           # Tokens are files, and the connectors file only names them.
           grep -q '"token_file": "/etc/secrets-bridge/gateway/argocd/argocd-main/token"' $f
           grep -q 'mountPath: /etc/secrets-bridge/gateway/argocd/argocd-main$' $f
+          # applications[].uid renders as uid when set, and not at all when unset.
+          grep -q '"uid": "6f1c2c1e-0000-4000-8000-0000000000a1"' $f
+          [ "$(grep -c '"uid":' $f)" -eq 1 ]
           if grep -q 'subPath:' $f; then exit 1; fi
           grep -q 'defaultMode: 288' $f
           grep -q 'fsGroup: 65532' $f
@@ -774,6 +777,27 @@ jobs:
             $GATEWAY --set-json 'connectors.argocd[0].applications=[]'
           .github/scripts/expect-render.sh reject 'applications id "payments-api" is used more than once' gateway/ \
             $GATEWAY --set 'connectors.argocd[0].applications[1].id=payments-api'
+
+      - name: gateway Argo CD application uid must be a lower-case UUID
+        run: |
+          # The schema refuses it first; the template guard backs it up when
+          # schema validation is skipped.
+          .github/scripts/expect-render.sh reject "applications/0/uid': '6F1C2C1E-0000-4000-8000-0000000000A1' does not match pattern '^(" gateway/ \
+            $GATEWAY --set 'connectors.argocd[0].applications[0].uid=6F1C2C1E-0000-4000-8000-0000000000A1'
+          .github/scripts/expect-render.sh reject "applications/1/uid': 'payments-worker' does not match pattern '^(" gateway/ \
+            $GATEWAY --set 'connectors.argocd[0].applications[1].uid=payments-worker'
+          .github/scripts/expect-render.sh reject "applications/0/uid': '{6f1c2c1e-0000-4000-8000-0000000000a1}' does not match pattern '^(" gateway/ \
+            $GATEWAY --set-json 'connectors.argocd[1].applications[0].uid="{6f1c2c1e-0000-4000-8000-0000000000a1}"'
+          .github/scripts/expect-render.sh reject 'connectors.argocd[0].applications[0].uid="6f1c2c1e-0000-4000-8000-0000000000a" must be' gateway/ \
+            $GATEWAY --skip-schema-validation --set 'connectors.argocd[0].applications[0].uid=6f1c2c1e-0000-4000-8000-0000000000a'
+          # Unset, empty and valid values render; unset and empty render no uid.
+          .github/scripts/expect-render.sh accept gateway/ \
+            $GATEWAY --set-json 'connectors.argocd[0].applications=[{"id":"payments-api","name":"payments-api"}]'
+          .github/scripts/expect-render.sh accept gateway/ \
+            $GATEWAY --set 'connectors.argocd[0].applications[0].uid='
+          if helm template r gateway/ $GATEWAY --set 'connectors.argocd[0].applications[0].uid=' | grep -q '"uid":'; then exit 1; fi
+          .github/scripts/expect-render.sh accept gateway/ \
+            $GATEWAY --set 'connectors.argocd[1].applications[0].uid=0d2e9f4a-1b3c-4d5e-8f60-718293a4b5c6'
 
       - name: gateway NetworkPolicy without egress peers must be rejected
         run: |

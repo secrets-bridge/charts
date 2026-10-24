@@ -171,6 +171,11 @@ guard has a case in the safety-rails CI job.
 {{- fail (printf "secrets-bridge-gateway: %s.applications[%d].appNamespace=%q must be a DNS label." $where $j (toString .)) -}}
 {{- end -}}
 {{- end -}}
+{{- with $a.uid -}}
+{{- if not (regexMatch (include "secrets-bridge-gateway.uidRegex" $) (toString .)) -}}
+{{- fail (printf "secrets-bridge-gateway: %s.applications[%d].uid=%q must be the Application's metadata.uid, a lower-case UUID." $where $j (toString .)) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if $.Values.networkPolicy.enabled -}}
 {{- include "secrets-bridge-gateway.validateEgress" (list (printf "%s.egress" $where) $c.egress true) -}}

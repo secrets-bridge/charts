@@ -24,6 +24,7 @@ connectors:
       applications:
         - id: payments-api
           name: payments-api
+          uid: 6f1c2c1e-0000-4000-8000-0000000000a1
         - id: payments-worker
           name: payments-worker
           appNamespace: tenant-a-uat
