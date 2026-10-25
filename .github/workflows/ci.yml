@@ -13,11 +13,11 @@ name: ci
 #   4. agent-identity-mount — on a kind cluster, the identity Secret shows
 #                      up read-only at /etc/secrets-bridge/agent with the
 #                      file modes the agent accepts (0440 root:<fsGroup>)
-#   5. root-hygiene  fails if a YAML file sits at the repo root, where
-#                      only render output ends up (charts live in folders)
-#   6. release-name  — sanity check that the chart names + per-component
+#   5. release-name  — sanity check that the chart names + per-component
 #                      fullnames truncate cleanly to ≤63 chars under a
 #                      long release name (K8s label length limit)
+#   6. root-hygiene  fails if a YAML file sits at the repo root, where
+#                      only render output ends up (charts live in folders)
 #
 # CI does NOT publish. OCI publish to GHCR lands in a follow-up
 # workflow gated on git tags `v*.*.*`.
