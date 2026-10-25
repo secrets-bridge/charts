@@ -53,7 +53,7 @@ If your Secrets come from a vault through External Secrets Operator, store the s
 
 ### 2. Argo CD account and token
 
-Create a local Argo CD account with API key access and read-only RBAC. `applications, get` is the only permission the Gateway needs.
+Create a local Argo CD account with API key access. `applications, get` on each allowed AppProject is the only permission the Gateway needs; give it nothing else.
 
 ```yaml
 # argocd-cm
@@ -66,6 +66,20 @@ data:
 p, role:sb-gateway-read, applications, get, tenant-a-uat/*, allow
 g, sb-gateway, role:sb-gateway-read
 ```
+
+`policy.default` in `argocd-rbac-cm` applies to this account too. Leave it unset, or point it at a role that grants nothing more. The built-in `role:readonly` includes `logs, get`, so with it the Gateway refuses to start.
+
+On Argo CD 2.4 to 2.14, also turn on logs RBAC:
+
+```yaml
+# argocd-cm
+data:
+  server.rbac.log.enforce.enable: "true"
+```
+
+Without it, `applications, get` also lets the token read the pod logs of every Application it can read, and pod logs often hold secrets. The Gateway's `logs, get` check cannot see this. Argo CD 3.0 and later always enforce logs RBAC. Before 2.4 logs cannot be restricted, so those versions are not supported.
+
+Do not grant resource actions either (`applications, action/*` or `action/<group>/<kind>/<name>`): no can-i check can detect them, so your review of the Argo CD policy has to. The [Gateway operations guide](https://secrets-bridge.io/latest/operations/gateway/#rights-the-account-must-not-have) lists every right the account must not have.
 
 Generate a token and store it in a Secret, again without echoing it:
 
@@ -141,7 +155,9 @@ Use the namespace the Application lives in (`argocd`, or its `appNamespace`). In
           uid: 6f1c2c1e-0000-4000-8000-0000000000a1   # metadata.uid, lower-case UUID
 ```
 
-When you recreate an Application on purpose, read the new uid and update the value. Leave `uid` unset or empty to keep the per-process pin.
+When you recreate an Application on purpose, read the new uid and update the value. The control plane then sees a new identity for the target, marks it `identity_changed` and suspends its bindings until a platform admin (global `gateway.bind`, fresh second factor) re-confirms the target, as described in the [Gateway operations guide](https://secrets-bridge.io/latest/operations/gateway/). Re-confirm only after the Gateway runs with the new uid: the control plane accepts whatever identity the Gateway advertises at that moment. Leave `uid` unset or empty to keep the per-process pin.
+
+The Gateway sends each target's identity digest in its catalog, so upgrade the control plane before the Gateway. A control plane without target identity support (api#313) refuses that catalog, and the Gateway never turns ready.
 
 A replica turns ready once the control plane has accepted its heartbeat and catalog and every Argo CD self-check (`GET /api/v1/session/userinfo`) has passed. A 401 from the control plane leaves the pod running and not ready, with the reason in the log.
 
@@ -155,7 +171,7 @@ Each one fails `helm install` with a message that names the value, and each has 
 | Control plane | `cp.endpoint` is empty, not `https://` (plain `http://` needs `insecureTransport=true`), or carries userinfo, a query or a fragment |
 | Identity | `identity.existingSecret` is empty |
 | Connectors | `connectors.argocd` is empty; `connectors.eso` or `connectors.rollout` is set |
-| Each Argo CD connector | `name` is not a unique DNS label; `baseURL` is not `https://` (unless `insecureTransport=true`) or has userinfo, a query or a fragment; `tokenSecret.name` or `.key` is empty; `allowedProjects` or `applications` is empty; an application id is repeated or not a DNS label; an application `uid` is set and is not a lower-case UUID |
+| Each Argo CD connector | `name` is not a unique DNS label; `baseURL` is not `https://` (unless `insecureTransport=true`) or has userinfo, a query or a fragment; `tokenSecret.name` or `.key` is empty; `allowedProjects` or `applications` is empty; an application id is repeated, not a DNS label or starts with the reserved `d-` prefix; an application `uid` is set and is not a lower-case UUID |
 | NetworkPolicy | with `networkPolicy.enabled=true`: `cp.egress.cidrs` is empty, a connector has neither `egress.cidrs` nor a selector, a CIDR is malformed or is a `/0`, or a peer selects every pod (a selector with no `matchLabels` and no `matchExpressions` entries, with no narrower selector beside it). There is no fallback to egress to anywhere |
 
 ## Configuration

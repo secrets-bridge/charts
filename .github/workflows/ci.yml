@@ -778,6 +778,15 @@ jobs:
           .github/scripts/expect-render.sh reject 'applications id "payments-api" is used more than once' gateway/ \
             $GATEWAY --set 'connectors.argocd[0].applications[1].id=payments-api'
 
+      - name: gateway Argo CD application id must not use the reserved d- prefix
+        run: |
+          # d- starts every discovered target id; the Gateway refuses a
+          # static id there at boot, so the render refuses it first.
+          .github/scripts/expect-render.sh reject 'connectors.argocd[0].applications[0].id="d-payments" must not start with' gateway/ \
+            $GATEWAY --set 'connectors.argocd[0].applications[0].id=d-payments'
+          .github/scripts/expect-render.sh accept gateway/ \
+            $GATEWAY --set 'connectors.argocd[0].applications[0].id=dev-payments'
+
       - name: gateway Argo CD application uid must be a lower-case UUID
         run: |
           # The schema refuses it first; the template guard backs it up when

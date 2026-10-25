@@ -159,6 +159,9 @@ guard has a case in the safety-rails CI job.
 {{- if not (regexMatch (include "secrets-bridge-gateway.dnsLabelRegex" $) $id) -}}
 {{- fail (printf "secrets-bridge-gateway: %s.applications[%d].id=%q must be a DNS label." $where $j $id) -}}
 {{- end -}}
+{{- if hasPrefix "d-" $id -}}
+{{- fail (printf "secrets-bridge-gateway: %s.applications[%d].id=%q must not start with \"d-\", which is reserved for discovered targets." $where $j $id) -}}
+{{- end -}}
 {{- if hasKey $ids $id -}}
 {{- fail (printf "secrets-bridge-gateway: %s.applications id %q is used more than once." $where $id) -}}
 {{- end -}}
