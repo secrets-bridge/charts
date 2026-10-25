@@ -8,12 +8,12 @@
 # The bundle (agent_id, agent_secret, private_key, public_key_fingerprint)
 # goes from the CLI's stdout to kubectl's stdin. Nothing secret is printed.
 #
-# Then install the chart with identity.existingSecret=secrets-bridge-agent
+# Then install the chart with identity.existingSecret=secrets-bridge-agent-identity
 # (see values.yaml next to this script).
 set -euo pipefail
 
 NAMESPACE=${NAMESPACE:-secrets-bridge}
-SECRET_NAME=${SECRET_NAME:-secrets-bridge-agent}
+SECRET_NAME=${SECRET_NAME:-secrets-bridge-agent-identity}
 CP_ENDPOINT=${CP_ENDPOINT:?set CP_ENDPOINT, e.g. https://secrets-bridge.example.com}
 CLUSTER_NAME=${CLUSTER_NAME:?set CLUSTER_NAME, e.g. prod-eu}
 PROVIDER_TYPE=${PROVIDER_TYPE:-vault}

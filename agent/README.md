@@ -39,7 +39,7 @@ printf '%s' "$SB_ENROLL_TOKEN" \
   | secrets-bridge-agent enroll --cp-endpoint https://secrets-bridge.example.com \
       --token-file - --name prod-eu-agent --cluster-name prod-eu --provider-type vault \
       --format env --output - \
-  | kubectl -n secrets-bridge create secret generic secrets-bridge-agent --from-env-file=/dev/stdin
+  | kubectl -n secrets-bridge create secret generic secrets-bridge-agent-identity --from-env-file=/dev/stdin
 unset SB_ENROLL_TOKEN
 
 # 3. Install. Pin the image by digest.
@@ -48,7 +48,7 @@ helm install agent ./charts/agent \
   --set clusterName=prod-eu \
   --set cp.endpoint=https://secrets-bridge.example.com \
   --set image.digest=sha256:<agent-digest> \
-  --set identity.existingSecret=secrets-bridge-agent \
+  --set identity.existingSecret=secrets-bridge-agent-identity \
   --set providers.vault.enabled=true \
   --set providers.vault.addr=https://vault.example.com \
   --set providers.vault.kubernetesRole=secrets-bridge-agent
@@ -70,7 +70,7 @@ ESO is one way to sync the Secret, not a runtime dependency: the agent only read
 
 ## The identity Secret
 
-`identity.existingSecret` is required. The Secret must be in the release namespace and hold:
+`identity.existingSecret` is required. The documented name is `secrets-bridge-agent-identity`, which is also what `enroll --format k8s-secret` names the Secret unless you pass `--secret-name`. The Secret must be in the release namespace and hold:
 
 | Key | Content |
 |---|---|
@@ -78,7 +78,7 @@ ESO is one way to sync the Secret, not a runtime dependency: the agent only read
 | `agent_secret` | The agent credential, returned once by `enroll` |
 | `private_key` | Base64 of the 32-byte X25519 private key `enroll` generated |
 
-When your secret store uses other key names, map them with `identity.keys.agentId`, `identity.keys.agentSecret` and `identity.keys.privateKey`. The chart mounts only these three keys, through `items`, under the fixed file names above. Other keys in the Secret (such as `public_key_fingerprint`) are not mounted.
+When your secret store uses other key names, map them with `identity.keys.agentId`, `identity.keys.agentSecret` and `identity.keys.privateKey`. The chart mounts only these three keys, through `items`, under the fixed file names above. Other keys in the Secret are not mounted. A Secret created with `--from-env-file` from `enroll --format env` has a fourth key, `public_key_fingerprint`, which the chart leaves out and the agent ignores.
 
 How it's mounted:
 
@@ -90,7 +90,7 @@ The chart renders no PVC, no Role or RoleBinding, and no `envFrom`. The agent ha
 
 ## Rotation, revoke and restarts
 
-- **Key rotation.** An admin requests a rotation (console, or `POST /api/v1/admin/agents/<id>/key-rotation`, which needs `agent.mint` and a fresh second factor) and gets a one-time rotation token. On the workstation, `secrets-bridge-agent rotate-key` generates a new key, proves possession to the CP and prints a new bundle (same `agent_id` and `agent_secret`, new `private_key`). Write it to the same secret store entry. After ESO syncs it (or you replace the Kubernetes Secret), the agent has to restart: with `reloader.enabled=true` (default) and [stakater/reloader](https://github.com/stakater/Reloader) installed, that happens on its own; otherwise run `kubectl rollout restart deploy/<release>-secrets-bridge-agent`. Until it restarts, the agent still holds the old key and gets `409 agent_key_mismatch`.
+- **Key rotation.** An admin requests a rotation (console, or `POST /api/v1/admin/agents/<id>/key-rotation`, which needs `agent.mint` and a fresh second factor) and gets a one-time rotation token. On the workstation, `secrets-bridge-agent rotate-key --cp-endpoint ... --credentials-dir ... --rotation-token-file -` generates a new key, proves possession to the CP and prints a new bundle (same `agent_id` and `agent_secret`, new `private_key`). Write it to the same secret store entry. After ESO syncs it (or you replace the Kubernetes Secret), the agent has to restart: with `reloader.enabled=true` (default) and [stakater/reloader](https://github.com/stakater/Reloader) installed, that happens on its own; otherwise run `kubectl rollout restart deploy/<release>-secrets-bridge-agent`. Until it restarts, the agent still holds the old key and gets `409 agent_key_mismatch`.
 - **Revoke.** Revoking the agent on the CP stops it at its next request (`401`). Delete the Secret and the secret store entry; enroll again with a new token for a replacement.
 - **Restart or reschedule.** Reads the same Secret. Nothing is lost, because the agent keeps no local state.
 - **Rollouts.** The default RollingUpdate briefly runs two pods with one identity. Set `strategy.type: Recreate` if you want no overlap.

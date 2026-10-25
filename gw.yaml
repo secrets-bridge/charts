@@ -1,0 +1,324 @@
+---
+# Source: secrets-bridge-gateway/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-secrets-b
+  namespace: default
+  labels:
+    helm.sh/chart: secrets-bridge-gateway-0.0.1
+    app.kubernetes.io/name: secrets-bridge-gateway
+    app.kubernetes.io/instance: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    app.kubernetes.io/version: "dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: secrets-bridge
+    app.kubernetes.io/component: gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: secrets-bridge-gateway
+      app.kubernetes.io/instance: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      app.kubernetes.io/component: gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  # The Gateway has no inbound listener; health and metrics stay on
+  # loopback and the probes run inside the container.
+  ingress: []
+  egress:
+    # DNS, to the cluster DNS pods only.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Control plane (cp.endpoint).
+    - to:
+        - ipBlock:
+            cidr: "192.0.2.10/32"
+        - ipBlock:
+            cidr: "192.0.2.11/32"
+      ports:
+        - port: 443
+          protocol: TCP
+    # Argo CD connector argocd-main.
+    - to:
+        - ipBlock:
+            cidr: "198.51.100.20/32"
+      ports:
+        - port: 443
+          protocol: TCP
+    # Argo CD connector argocd-local.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: argocd
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: argocd-server
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+# Source: secrets-bridge-gateway/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-secrets-b
+  namespace: default
+  labels:
+    helm.sh/chart: secrets-bridge-gateway-0.0.1
+    app.kubernetes.io/name: secrets-bridge-gateway
+    app.kubernetes.io/instance: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    app.kubernetes.io/version: "dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: secrets-bridge
+    app.kubernetes.io/component: gateway
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: secrets-bridge-gateway
+      app.kubernetes.io/instance: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      app.kubernetes.io/component: gateway
+---
+# Source: secrets-bridge-gateway/templates/serviceaccount.yaml
+# Release 1 reads no Kubernetes API. This ServiceAccount has no Role or
+# binding anywhere in the chart, and its token is never mounted.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-secrets-b
+  namespace: default
+  labels:
+    helm.sh/chart: secrets-bridge-gateway-0.0.1
+    app.kubernetes.io/name: secrets-bridge-gateway
+    app.kubernetes.io/instance: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    app.kubernetes.io/version: "dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: secrets-bridge
+    app.kubernetes.io/component: gateway
+automountServiceAccountToken: false
+---
+# Source: secrets-bridge-gateway/templates/configmap-connectors.yaml
+# The connectors file: URLs, allowlists and file paths only. Tokens stay
+# in their Secrets and reach the pod as read-only files.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-connectors
+  namespace: default
+  labels:
+    helm.sh/chart: secrets-bridge-gateway-0.0.1
+    app.kubernetes.io/name: secrets-bridge-gateway
+    app.kubernetes.io/instance: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    app.kubernetes.io/version: "dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: secrets-bridge
+    app.kubernetes.io/component: gateway
+data:
+  connectors.json: |
+    [
+      {
+        "kind": "argocd",
+        "name": "argocd-main",
+        "settings": {
+          "allowed_projects": [
+            "tenant-a-uat"
+          ],
+          "applications": [
+            {
+              "id": "payments-api",
+              "name": "payments-api",
+              "uid": "6f1c2c1e-0000-4000-8000-0000000000a1"
+            },
+            {
+              "app_namespace": "tenant-a-uat",
+              "id": "payments-worker",
+              "name": "payments-worker"
+            }
+          ],
+          "base_url": "https://argocd.example.com",
+          "ca_file": "/etc/secrets-bridge/gateway/argocd-ca/argocd-main/ca.crt",
+          "timeout": "10s",
+          "token_file": "/etc/secrets-bridge/gateway/argocd/argocd-main/token"
+        }
+      },
+      {
+        "kind": "argocd",
+        "name": "argocd-local",
+        "settings": {
+          "allowed_projects": [
+            "tenant-a-uat"
+          ],
+          "applications": [
+            {
+              "id": "orders-api",
+              "name": "orders-api"
+            }
+          ],
+          "base_url": "https://argocd-server.argocd.svc",
+          "token_file": "/etc/secrets-bridge/gateway/argocd/argocd-local/token"
+        }
+      }
+    ]
+---
+# Source: secrets-bridge-gateway/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-secrets-b
+  namespace: default
+  labels:
+    helm.sh/chart: secrets-bridge-gateway-0.0.1
+    app.kubernetes.io/name: secrets-bridge-gateway
+    app.kubernetes.io/instance: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    app.kubernetes.io/version: "dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: secrets-bridge
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: secrets-bridge-gateway
+      app.kubernetes.io/instance: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: secrets-bridge-gateway
+        app.kubernetes.io/instance: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        app.kubernetes.io/component: gateway
+      annotations:
+        # Each replica reads its configuration once at boot, so a change
+        # rolls the pods.
+        checksum/connectors: 2bf041a3727b560284c6116cbc6af5c5b508389db0effc7bc2fe687705d3acc8
+        checksum/config: 89fc9af1d6014c3f981d857c3d1e337acdaf3b30243f5c3b78195df8fb2d083d
+    spec:
+      serviceAccountName: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-secrets-b
+      # Release 1 needs no Kubernetes API access. Set on the pod too, so
+      # serviceAccount.create=false (an existing or `default` SA) cannot
+      # hand the Gateway a token.
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: ghcr.io/secrets-bridge/gateway@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          # No ports: the only listener is the loopback health and metrics
+          # server.
+          env:
+            - name: SB_CP_ENDPOINT
+              value: "https://cp.example.com"
+            - name: SB_GATEWAY_IDENTITY_FILE
+              value: "/etc/secrets-bridge/gateway/identity/identity.json"
+            - name: SB_GATEWAY_CONNECTORS_FILE
+              value: "/etc/secrets-bridge/gateway/config/connectors.json"
+            - name: SB_GATEWAY_LOCAL_ADDR
+              value: "127.0.0.1:8091"
+            - name: SB_LOG_LEVEL
+              value: "info"
+          livenessProbe:
+            exec:
+              command: ["/usr/local/bin/gateway", "healthcheck", "--live", "--local-addr", "127.0.0.1:8091", "--timeout", "2s"]
+            failureThreshold: 3
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            exec:
+              command: ["/usr/local/bin/gateway", "healthcheck", "--local-addr", "127.0.0.1:8091", "--timeout", "2s"]
+            failureThreshold: 3
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            limits:
+              memory: 128Mi
+            requests:
+              cpu: 20m
+              memory: 48Mi
+          volumeMounts:
+            - name: identity
+              mountPath: /etc/secrets-bridge/gateway/identity
+              readOnly: true
+            - name: connectors
+              mountPath: /etc/secrets-bridge/gateway/config
+              readOnly: true
+            # Argo CD tokens: directory mounts (no subPath), so a rotated
+            # token reaches the pod without a restart.
+            - name: argocd-token-0
+              mountPath: /etc/secrets-bridge/gateway/argocd/argocd-main
+              readOnly: true
+            - name: argocd-ca-0
+              mountPath: /etc/secrets-bridge/gateway/argocd-ca/argocd-main
+              readOnly: true
+            - name: argocd-token-1
+              mountPath: /etc/secrets-bridge/gateway/argocd/argocd-local
+              readOnly: true
+      volumes:
+        # Secret files are owned by root with group fsGroup; 0440 is group
+        # read only, which the Gateway accepts for its identity file.
+        - name: identity
+          secret:
+            secretName: "sb-gateway-identity"
+            defaultMode: 288 # 0440
+            items:
+              - key: "identity.json"
+                path: identity.json
+        - name: connectors
+          configMap:
+            name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-connectors
+            defaultMode: 292 # 0444
+            items:
+              - key: connectors.json
+                path: connectors.json
+        - name: argocd-token-0
+          secret:
+            secretName: "sb-gateway-argocd-main"
+            defaultMode: 288 # 0440
+            items:
+              - key: "token"
+                path: token
+        - name: argocd-ca-0
+          secret:
+            secretName: "argocd-main-ca"
+            defaultMode: 288 # 0440
+            items:
+              - key: "ca.crt"
+                path: ca.crt
+        - name: argocd-token-1
+          secret:
+            secretName: "sb-gateway-argocd-local"
+            defaultMode: 288 # 0440
+            items:
+              - key: "token"
+                path: token

@@ -179,7 +179,8 @@ cp:
 #
 # The only identity mode. A Secret you create (kubectl, External Secrets
 # Operator from AWS Secrets Manager or Vault, or your own tooling) holds the
-# bundle `secrets-bridge-agent enroll` printed:
+# bundle `secrets-bridge-agent enroll` printed (the env format and ESO
+# extract may add public_key_fingerprint; it is not mounted):
 #
 #   agent_id      the agent id the CP issued
 #   agent_secret  the agent credential (the CP keeps only its SHA-256)
@@ -197,7 +198,9 @@ cp:
 # Never put these values in chart values, Git, shell arguments or CI logs.
 
 identity:
-  # Required. Name of the Secret in the release namespace.
+  # Required. Name of the Secret in the release namespace. The documented
+  # name is secrets-bridge-agent-identity, which is also the default of
+  # `secrets-bridge-agent enroll --format k8s-secret --secret-name`.
   existingSecret: ""
   # Key names inside the Secret, when they differ from the defaults. The
   # chart maps each one to the fixed file name the agent reads. Other keys

@@ -283,7 +283,7 @@ jobs:
             'agent_secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' \
             'private_key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' \
             'public_key_fingerprint=sha256:0000000000000000000000000000000000000000000000000000000000000000' \
-            | kubectl create secret generic secrets-bridge-agent -n secrets-bridge \
+            | kubectl create secret generic secrets-bridge-agent-identity -n secrets-bridge \
                 --dry-run=client -o yaml --from-env-file=/dev/stdin > out/agent-kubectl-secret-object.yaml
           kubeconform -strict -summary out/agent-kubectl-secret-object.yaml
           for k in agent_id agent_secret private_key; do

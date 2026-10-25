@@ -7,7 +7,7 @@ image:
   # Pin by digest. Replace with the agent image digest you verified.
   digest: "sha256:<64 hex characters>"
 identity:
-  existingSecret: secrets-bridge-agent
+  existingSecret: secrets-bridge-agent-identity
 serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/secrets-bridge-agent

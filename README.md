@@ -68,7 +68,7 @@ printf '%s' "$SB_ENROLL_TOKEN" \
   | secrets-bridge-agent enroll --cp-endpoint https://secrets-bridge.example.com \
       --token-file - --name prod-eu-agent --cluster-name prod-eu --provider-type vault \
       --format env --output - \
-  | kubectl -n secrets-bridge create secret generic secrets-bridge-agent --from-env-file=/dev/stdin
+  | kubectl -n secrets-bridge create secret generic secrets-bridge-agent-identity --from-env-file=/dev/stdin
 unset SB_ENROLL_TOKEN
 
 # 3. Install with the Secret's name. Pin the image by digest.
@@ -77,7 +77,7 @@ helm install agent ./agent \
   --set clusterName=prod-eu \
   --set cp.endpoint=https://secrets-bridge.example.com \
   --set image.digest=sha256:<agent-digest> \
-  --set identity.existingSecret=secrets-bridge-agent \
+  --set identity.existingSecret=secrets-bridge-agent-identity \
   --set providers.vault.enabled=true \
   --set providers.vault.addr=https://vault.example.com \
   --set providers.vault.kubernetesRole=secrets-bridge-agent
