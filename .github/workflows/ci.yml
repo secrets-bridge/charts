@@ -10,12 +10,10 @@ name: ci
 #   3. safety-rails  — verifies the documented render-time `fail`
 #                      guards actually trip (otherwise the safety
 #                      story is theatre, not code)
-#   4. agent-file-mode-overrides — explicit strategy / fsGroupChangePolicy
-#                      values win over the agent's file-mode defaults
-#   5. agent-ssa-upgrade — on a kind cluster, the file-mode strategy applies
-#                      with server-side apply over a Deployment that carries
-#                      the defaulted rollingUpdate block (#37)
-#   6. release-name  — sanity check that the chart names + per-component
+#   4. agent-identity-mount — on a kind cluster, the identity Secret shows
+#                      up read-only at /etc/secrets-bridge/agent with the
+#                      file modes the agent accepts (0440 root:<fsGroup>)
+#   5. release-name  — sanity check that the chart names + per-component
 #                      fullnames truncate cleanly to ≤63 chars under a
 #                      long release name (K8s label length limit)
 #
@@ -252,39 +250,75 @@ jobs:
             --set networkPolicy.enabled=true \
             --set 'networkPolicy.allowCIDRs={10.0.0.10/32,10.0.0.20/32}' \
             --set podDisruptionBudget.enabled=true \
+            --set identity.existingSecret=sb-agent \
             > out/agent.yaml
           kubeconform -strict -summary -skip CustomResourceDefinition \
             -ignore-missing-schemas \
             out/agent.yaml
-          # Static mode keeps the Kubernetes defaults.
           if grep -q 'strategy:' out/agent.yaml; then exit 1; fi
-          if grep -q 'fsGroupChangePolicy' out/agent.yaml; then exit 1; fi
 
-      - name: Render + validate agent (enrollment / file-mode preset)
+      - name: Render + validate agent examples (kubectl Secret, ESO from AWS SM, ESO from Vault)
+        env:
+          DIGEST: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+          CRDS: https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
         run: |
-          helm template ci-agent-enroll agent/ \
-            --namespace secrets-bridge \
-            --set clusterName=ci-cluster \
-            --set cp.endpoint=https://sb.example.com \
-            --set image.tag=0.1.0 \
-            --set identity.mode=file \
-            --set identity.persistence.enabled=true \
-            --set enrollment.enabled=true \
-            --set enrollment.tokenSecretName=sb-agent-enroll \
-            --set providers.awsSecretsManager.enabled=true \
-            --set providers.awsSecretsManager.region=us-east-1 \
-            > out/agent-enroll.yaml
-          kubeconform -strict -summary -skip CustomResourceDefinition \
-            -ignore-missing-schemas \
-            out/agent-enroll.yaml
-          # File mode: no surge pod (RWO identity PVC), and not type Recreate,
-          # which server-side apply can't switch an existing Deployment to (#37).
-          grep -A3 'type: RollingUpdate' out/agent-enroll.yaml | grep -q 'maxSurge: 0'
-          grep -A3 'type: RollingUpdate' out/agent-enroll.yaml | grep -q 'maxUnavailable: 100%'
-          if grep -q 'type: Recreate' out/agent-enroll.yaml; then exit 1; fi
-          # File mode: kubelet must not re-add group bits to the identity files.
-          grep -q 'fsGroupChangePolicy: OnRootMismatch' out/agent-enroll.yaml
-          grep -A1 'name: SB_AGENT_PRIVATE_KEY_FILE' out/agent-enroll.yaml | grep -q '/var/lib/secrets-bridge-agent/agent.key'
+          for ex in kubectl-secret eso-aws-secrets-manager eso-vault; do
+            dir=agent/examples/$ex
+            helm template ci-agent agent/ --namespace secrets-bridge \
+              -f $dir/values.yaml --set image.digest=$DIGEST > out/agent-$ex.yaml
+            # ExternalSecret / SecretStore are validated against the ESO CRD schemas.
+            kubeconform -strict -summary \
+              -schema-location default -schema-location "$CRDS" \
+              out/agent-$ex.yaml $(ls $dir/*.yaml | grep -v '/values.yaml$')
+          done
+          # The ESO examples copy exactly the three keys the agent reads.
+          for ex in eso-aws-secrets-manager eso-vault; do
+            got=$(yq -r '.spec.data[].secretKey' agent/examples/$ex/externalsecret.yaml | sort | xargs)
+            [ "$got" = "agent_id agent_secret private_key" ] || { echo "::error::$ex keys: $got"; exit 1; }
+          done
+          # The kubectl example: the env bundle `enroll --format env` prints
+          # becomes a valid Secret with the three keys. Dummy values only.
+          printf '%s\n' \
+            'agent_id=00000000-0000-4000-8000-000000000001' \
+            'agent_secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' \
+            'private_key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' \
+            'public_key_fingerprint=sha256:0000000000000000000000000000000000000000000000000000000000000000' \
+            | kubectl create secret generic secrets-bridge-agent -n secrets-bridge \
+                --dry-run=client -o yaml --from-env-file=/dev/stdin > out/agent-kubectl-secret-object.yaml
+          kubeconform -strict -summary out/agent-kubectl-secret-object.yaml
+          for k in agent_id agent_secret private_key; do
+            yq -e ".data.$k" out/agent-kubectl-secret-object.yaml > /dev/null
+          done
+          bash -n agent/examples/kubectl-secret/create-secret.sh
+
+      - name: Agent renders no PVC, no RBAC, no envFrom, and a 0400 read-only identity mount
+        run: |
+          for f in out/agent.yaml out/agent-kubectl-secret.yaml out/agent-eso-aws-secrets-manager.yaml out/agent-eso-vault.yaml; do
+            echo "checking $f"
+            kinds=$(yq -r 'select(.kind) | .kind' $f | sort -u | xargs)
+            echo "kinds: $kinds"
+            for k in PersistentVolumeClaim Role ClusterRole RoleBinding ClusterRoleBinding Secret; do
+              if grep -qw "$k" <<<"$kinds"; then echo "::error::$f renders a $k"; exit 1; fi
+            done
+            if grep -qE 'persistentVolumeClaim|envFrom|SB_ENROLLMENT|SB_IDENTITY_FILE|SB_AGENT_PRIVATE_KEY|SB_AGENT_ID|SB_AGENT_SECRET' $f; then
+              echo "::error::$f renders a removed identity setting"; exit 1
+            fi
+            yq 'select(.kind == "Deployment")' $f > out/deploy-only.yaml
+            d='.spec.template.spec'
+            [ "$(yq -r "$d | .volumes[] | select(.name == \"identity\") | .secret.defaultMode" out/deploy-only.yaml)" = 256 ]
+            [ "$(yq -r "$d | .volumes[] | select(.name == \"identity\") | [.secret.items[].mode] | unique | .[]" out/deploy-only.yaml)" = 256 ]
+            [ "$(yq -r "$d | .volumes[] | select(.name == \"identity\") | [.secret.items[].path] | sort | join(\" \")" out/deploy-only.yaml)" = "agent_id agent_secret private_key" ]
+            [ "$(yq -r "$d | .containers[0].volumeMounts[] | select(.name == \"identity\") | .readOnly" out/deploy-only.yaml)" = true ]
+            [ "$(yq -r "$d | .containers[0].volumeMounts[] | select(.name == \"identity\") | .mountPath" out/deploy-only.yaml)" = /etc/secrets-bridge/agent ]
+            [ "$(yq -r "$d | .containers[0].env[] | select(.name == \"SB_AGENT_CREDENTIALS_DIR\") | .value" out/deploy-only.yaml)" = /etc/secrets-bridge/agent ]
+            [ "$(yq -r "$d | .securityContext.fsGroup" out/deploy-only.yaml)" = 65532 ]
+          done
+          # identity.keys.* maps other key names to the fixed file names.
+          helm template r agent/ --set clusterName=ci --set cp.endpoint=https://x.example.com \
+            --set image.tag=0.1.0 --set identity.existingSecret=s \
+            --set identity.keys.agentId=id --set identity.keys.agentSecret=secret --set identity.keys.privateKey=x25519 \
+            --show-only templates/deployment.yaml > out/agent-keys.yaml
+          [ "$(yq -r '.spec.template.spec.volumes[] | select(.name == "identity") | .secret.items[] | .key + ":" + .path' out/agent-keys.yaml | xargs)" = "id:agent_id secret:agent_secret x25519:private_key" ]
 
       - name: Render + validate agent (private-CA TLS preset)
         run: |
@@ -295,6 +329,7 @@ jobs:
             --set cp.caExistingSecret=cp-ca \
             --set cp.tlsServerName=sb.internal \
             --set image.tag=0.1.0 \
+            --set identity.existingSecret=sb-agent \
             > out/agent-ca.yaml
           kubeconform -strict -summary -skip CustomResourceDefinition \
             -ignore-missing-schemas \
@@ -372,7 +407,9 @@ jobs:
       PINNED: >-
         --set api.image.tag=0.1.0 --set ui.image.tag=0.1.0
         --set worker.image.tag=0.1.0 --set controller.image.tag=0.1.0
-      AGENT: --set clusterName=ci --set cp.endpoint=https://x.example.com
+      AGENT: >-
+        --set clusterName=ci --set cp.endpoint=https://x.example.com
+        --set identity.existingSecret=sb-agent
       # A valid object store config (AWS S3, SSE-S3 by default).
       OBJSTORE: >-
         --set objectStore.enabled=true --set objectStore.bucket=example-bucket
@@ -380,11 +417,6 @@ jobs:
       DIGEST: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
       # A valid Release 1 gateway (pinned by digest, NetworkPolicy on).
       GATEWAY: -f gateway/ci/r1-values.yaml
-      # A valid enrollment (file-mode) agent, pinned.
-      ENROLL: >-
-        --set image.tag=0.1.0 --set identity.mode=file
-        --set identity.persistence.enabled=true --set enrollment.enabled=true
-        --set enrollment.tokenSecretName=sb-agent-enroll
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -608,12 +640,13 @@ jobs:
       - name: agent missing clusterName must be rejected
         run: |
           .github/scripts/expect-render.sh reject 'clusterName is required' agent/ \
-            --set cp.endpoint=https://x.example.com --set image.tag=0.1.0
+            --set cp.endpoint=https://x.example.com --set image.tag=0.1.0 --set identity.existingSecret=sb-agent
 
       - name: agent plain HTTP without insecureTransport must be rejected
         run: |
           .github/scripts/expect-render.sh reject 'is plain HTTP' agent/ \
-            --set clusterName=ci --set cp.endpoint=http://insecure.example.com --set image.tag=0.1.0
+            --set clusterName=ci --set cp.endpoint=http://insecure.example.com --set image.tag=0.1.0 \
+            --set identity.existingSecret=sb-agent
 
       # CHT-N-01: the agent has no env value, so pinning always applies
       # unless the dev-only image.allowMutableTag escape hatch is set.
@@ -656,27 +689,52 @@ jobs:
             --set providers.vault.kubernetesRole=sb-agent \
             --set serviceAccount.automountServiceAccountToken=false
 
-      # File mode keeps the wire-envelope key next to the credential.
-      - name: agent privateKeyFileName equal to identity.fileName must be rejected
+      # existingSecret is the only identity mode. The PVC / enrollment
+      # settings are gone: the schema refuses them, and the template guard
+      # names them when schema validation is skipped.
+      - name: agent without identity.existingSecret must be rejected
         run: |
-          .github/scripts/expect-render.sh reject 'must differ from identity.fileName' agent/ \
-            $AGENT $ENROLL --set identity.privateKeyFileName=identity.json
+          .github/scripts/expect-render.sh reject 'identity.existingSecret is required' agent/ \
+            --set clusterName=ci --set cp.endpoint=https://x.example.com --set image.tag=0.1.0
 
-      - name: agent privateKeyFileName with a path must be rejected
+      - name: agent removed identity and enrollment values must be rejected
         run: |
-          .github/scripts/expect-render.sh reject 'must be a bare file name' agent/ \
-            $AGENT $ENROLL --set identity.privateKeyFileName=keys/agent.key
+          .github/scripts/expect-render.sh reject "at '': additional properties 'enrollment' not allowed" agent/ \
+            $AGENT --set image.tag=0.1.0 --set enrollment.enabled=true
+          .github/scripts/expect-render.sh reject "at '': additional properties 'agent' not allowed" agent/ \
+            $AGENT --set image.tag=0.1.0 --set agent.providerType=vault
+          for k in mode=file persistence.enabled=true inline.agentId=x mountPath=/var/lib/x fileName=identity.json privateKeyFileName=agent.key; do
+            key=${k%%[.=]*}
+            .github/scripts/expect-render.sh reject "at '/identity': additional properties '$key' not allowed" agent/ \
+              $AGENT --set image.tag=0.1.0 --set identity.$k
+            .github/scripts/expect-render.sh reject "identity.$key was removed" agent/ \
+              $AGENT --set image.tag=0.1.0 --skip-schema-validation --set identity.$k
+          done
+          .github/scripts/expect-render.sh reject 'enrollment.* was removed' agent/ \
+            $AGENT --set image.tag=0.1.0 --skip-schema-validation --set enrollment.enabled=true \
+            --set enrollment.tokenSecretName=sb-agent-enroll
+          .github/scripts/expect-render.sh reject 'agent.* (name, providerType, region) was removed' agent/ \
+            $AGENT --set image.tag=0.1.0 --skip-schema-validation --set agent.providerType=vault
 
-      - name: agent privateKeyFileName "." or ".." must be rejected
+      - name: agent without podSecurityContext.fsGroup must be rejected
         run: |
-          .github/scripts/expect-render.sh reject 'must be a bare file name' agent/ \
-            $AGENT $ENROLL --set identity.privateKeyFileName=.
-          .github/scripts/expect-render.sh reject 'must be a bare file name' agent/ \
-            $AGENT $ENROLL --set identity.privateKeyFileName=..
+          .github/scripts/expect-render.sh reject "missing property 'fsGroup'" agent/ \
+            $AGENT --set image.tag=0.1.0 --set podSecurityContext.fsGroup=null
+          .github/scripts/expect-render.sh reject 'podSecurityContext.fsGroup is required' agent/ \
+            $AGENT --set image.tag=0.1.0 --skip-schema-validation --set podSecurityContext.fsGroup=null
 
-      - name: agent file mode with privateKeyFileName empty (ephemeral key) must be accepted
+      - name: agent empty identity key name or Vault token key must be rejected
         run: |
-          .github/scripts/expect-render.sh accept agent/ $AGENT $ENROLL --set identity.privateKeyFileName=
+          .github/scripts/expect-render.sh reject 'identity.keys.privateKey must not be empty' agent/ \
+            $AGENT --set image.tag=0.1.0 --skip-schema-validation --set identity.keys.privateKey=
+          .github/scripts/expect-render.sh reject "/identity/keys/privateKey" agent/ \
+            $AGENT --set image.tag=0.1.0 --set identity.keys.privateKey=
+          .github/scripts/expect-render.sh reject 'providers.vault.tokenSecret.key must not be empty' agent/ \
+            $AGENT --set image.tag=0.1.0 --set providers.vault.enabled=true \
+            --set providers.vault.tokenSecret.name=vault-token --set providers.vault.tokenSecret.key=
+          .github/scripts/expect-render.sh accept agent/ \
+            $AGENT --set image.tag=0.1.0 --set providers.vault.enabled=true \
+            --set providers.vault.tokenSecret.name=vault-token
 
       # Gateway (Release 1, Argo CD only). Each case changes one input of
       # the valid $GATEWAY preset.
@@ -839,56 +897,17 @@ jobs:
           .github/scripts/expect-render.sh accept gateway/ \
             $GATEWAY --set-json 'connectors.argocd[1].egress={"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"argocd"}}}'
 
-  agent-file-mode-overrides:
-    name: agent file-mode overrides
-    runs-on: ubuntu-latest
-    env:
-      ARGS: >-
-        --set clusterName=ci --set cp.endpoint=https://x.example.com
-        --set image.tag=0.1.0 --set identity.mode=file
-        --set identity.persistence.enabled=true --set enrollment.enabled=true
-        --set enrollment.tokenSecretName=sb-agent-enroll
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: ${{ env.HELM_VERSION }}
-
-      - name: explicit fsGroupChangePolicy wins over the file-mode default
-        run: |
-          out=$(helm template r agent/ $ARGS --set podSecurityContext.fsGroupChangePolicy=Always --show-only templates/deployment.yaml)
-          grep -q 'fsGroupChangePolicy: Always' <<<"$out"
-          if grep -q 'OnRootMismatch' <<<"$out"; then exit 1; fi
-
-      - name: no fsGroup, no fsGroupChangePolicy
-        run: |
-          out=$(helm template r agent/ $ARGS --set podSecurityContext.fsGroup=null --show-only templates/deployment.yaml)
-          if grep -q 'fsGroupChangePolicy' <<<"$out"; then exit 1; fi
-
-      - name: explicit strategy wins over the file-mode default
-        run: |
-          out=$(helm template r agent/ $ARGS --set strategy.type=Recreate --show-only templates/deployment.yaml)
-          grep -A1 'strategy:' <<<"$out" | grep -q 'type: Recreate'
-          if grep -q 'maxSurge' <<<"$out"; then exit 1; fi
-
-  agent-ssa-upgrade:
-    # #37: an agent Deployment created without a strategy carries the
-    # defaulted rollingUpdate block. Server-side apply (Argo CD
-    # ServerSideApply=true, Flux) doesn't remove fields it never owned, so
-    # the file-mode strategy must apply on top of it.
-    name: agent file-mode upgrade under server-side apply
+  agent-identity-mount:
+    # The agent refuses credential files with group write or any bit for
+    # others (mode & 0o037 != 0). Secret files are owned by root, so the
+    # non-root agent reads them through fsGroup, and kubelet adds the group
+    # read bit to the 0400 defaultMode. This job checks what kubelet really
+    # mounts: 0440 root:65532, read-only, the three files only. A busybox
+    # container stands in for the agent, with the chart's pod spec as is.
+    name: agent identity mount on kind
     runs-on: ubuntu-latest
     env:
       KIND_VERSION: v0.29.0
-      ARGS: >-
-        --namespace default
-        --set clusterName=ci --set cp.endpoint=https://x.example.com
-        --set image.tag=0.1.0 --set identity.mode=file
-        --set identity.persistence.enabled=true --set enrollment.enabled=true
-        --set enrollment.tokenSecretName=sb-agent-enroll
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -906,20 +925,53 @@ jobs:
           sudo install kind /usr/local/bin/kind
           kind create cluster --wait 120s
 
-      - name: Create the Deployment the way a pre-#36 chart did (no strategy)
+      - name: Create the identity Secret and deploy the chart's pod spec
         run: |
-          helm template r agent/ $ARGS --show-only templates/deployment.yaml \
-            | yq 'del(.spec.strategy)' > old.yaml
-          kubectl apply --server-side --field-manager=ci-sync -f old.yaml
-          kubectl get deploy r-secrets-bridge-agent -o jsonpath='{.spec.strategy}' | grep -q '"maxSurge":"25%"'
+          # Dummy values. The extra key must not be mounted.
+          printf '%s\n' \
+            'agent_id=00000000-0000-4000-8000-000000000001' \
+            'agent_secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' \
+            'private_key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' \
+            'public_key_fingerprint=sha256:0000000000000000000000000000000000000000000000000000000000000000' \
+            | kubectl create secret generic sb-agent --from-env-file=/dev/stdin
+          helm template r agent/ --namespace default \
+            --set clusterName=ci --set cp.endpoint=https://x.example.com \
+            --set identity.existingSecret=sb-agent \
+            --set global.imageRegistry=docker.io --set image.repository=library/busybox \
+            --set image.tag=1.37.0 --set image.pullPolicy=IfNotPresent \
+            --show-only templates/deployment.yaml > deploy.yaml
+          helm template r agent/ --namespace default \
+            --set clusterName=ci --set cp.endpoint=https://x.example.com \
+            --set identity.existingSecret=sb-agent --set image.tag=0.1.0 \
+            --show-only templates/serviceaccount.yaml | kubectl apply -f -
+          # Swap the agent process for a probe of the mount; keep the rest.
+          yq -i '
+            del(.spec.template.spec.containers[0].livenessProbe) |
+            del(.spec.template.spec.containers[0].readinessProbe) |
+            .spec.template.spec.containers[0].command = ["sh", "-c",
+              "id; for f in agent_id agent_secret private_key; do stat -L -c \"%n %a %u:%g\" /etc/secrets-bridge/agent/$f; cat /etc/secrets-bridge/agent/$f > /dev/null && echo readable; done; ls /etc/secrets-bridge/agent; touch /etc/secrets-bridge/agent/x 2>/dev/null && echo WRITABLE; echo done; sleep 3600"]
+          ' deploy.yaml
+          kubectl apply -f deploy.yaml
+          kubectl rollout status deploy/r-secrets-bridge-agent --timeout=180s
 
-      - name: Upgrade to the current chart with server-side apply
+      - name: The mount has the modes and ownership the agent accepts
         run: |
-          helm template r agent/ $ARGS --show-only templates/deployment.yaml > new.yaml
-          kubectl apply --server-side --force-conflicts --field-manager=ci-sync -f new.yaml
-          s=$(kubectl get deploy r-secrets-bridge-agent -o jsonpath='{.spec.strategy}')
-          echo "$s"
-          [ "$s" = '{"rollingUpdate":{"maxSurge":0,"maxUnavailable":"100%"},"type":"RollingUpdate"}' ]
+          for i in $(seq 30); do
+            log=$(kubectl logs deploy/r-secrets-bridge-agent 2>/dev/null || true)
+            grep -q '^done$' <<<"$log" && break
+            sleep 2
+          done
+          echo "$log"
+          for f in agent_id agent_secret private_key; do
+            grep -qx "/etc/secrets-bridge/agent/$f 440 0:65532" <<<"$log"
+          done
+          [ "$(grep -c '^readable$' <<<"$log")" = 3 ]
+          if grep -q WRITABLE <<<"$log"; then echo "::error::identity mount is writable"; exit 1; fi
+          if grep -q public_key_fingerprint <<<"$log"; then echo "::error::unmapped key mounted"; exit 1; fi
+          # mode & 0o037 == 0: no group write, nothing for others.
+          for m in $(grep -oE ' [0-7]{3} 0:65532$' <<<"$log" | awk '{print $1}'); do
+            [ $(( 8#$m & 8#037 )) -eq 0 ] || { echo "::error::mode $m too open"; exit 1; }
+          done
 
   release-name:
     name: release-name truncation

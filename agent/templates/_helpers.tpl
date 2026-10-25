@@ -49,33 +49,11 @@ app.kubernetes.io/component: agent
 {{- end -}}
 
 {{/*
-identity.mode == "file" → the agent reads/writes SB_IDENTITY_FILE on a
-writable persistent volume (enrollment). Emits "true" or "". Validation
-keeps this 1:1 with enrollment.enabled.
+Read-only directory the agent reads agent_id, agent_secret and private_key
+from (SB_AGENT_CREDENTIALS_DIR). Fixed: the agent's default.
 */}}
-{{- define "secrets-bridge-agent.fileMode" -}}
-{{- if eq .Values.identity.mode "file" -}}
-true
-{{- end -}}
-{{- end -}}
-
-{{/* PVC name for FILE-mode identity persistence (BYO existingClaim wins). */}}
-{{- define "secrets-bridge-agent.identityClaimName" -}}
-{{- if .Values.identity.persistence.existingClaim -}}
-{{- .Values.identity.persistence.existingClaim -}}
-{{- else -}}
-{{- printf "%s-identity" (include "secrets-bridge-agent.fullname" .) -}}
-{{- end -}}
-{{- end -}}
-
-{{/* Absolute path of the persisted identity file (SB_IDENTITY_FILE). */}}
-{{- define "secrets-bridge-agent.identityFilePath" -}}
-{{- printf "%s/%s" (trimSuffix "/" .Values.identity.mountPath) .Values.identity.fileName -}}
-{{- end -}}
-
-{{/* FILE-mode wire-envelope private key path, on the identity volume. */}}
-{{- define "secrets-bridge-agent.privateKeyFilePath" -}}
-{{- printf "%s/%s" (trimSuffix "/" .Values.identity.mountPath) .Values.identity.privateKeyFileName -}}
+{{- define "secrets-bridge-agent.credentialsDir" -}}
+/etc/secrets-bridge/agent
 {{- end -}}
 
 {{/*
@@ -148,23 +126,5 @@ their own token. Emits "true" or "false".
 true
 {{- else -}}
 false
-{{- end -}}
-{{- end -}}
-
-{{/*
-Pod securityContext. FILE mode with an fsGroup defaults fsGroupChangePolicy
-to OnRootMismatch: with the Kubernetes default (Always) kubelet re-adds group
-bits to the identity and key files on every mount, and the agent has to
-tighten them back to owner-only at each start (agents before
-secrets-bridge/agent#38 only warn about the key file). An explicit
-podSecurityContext.fsGroupChangePolicy wins.
-*/}}
-{{- define "secrets-bridge-agent.podSecurityContext" -}}
-{{- $ctx := deepCopy (default (dict) .Values.podSecurityContext) -}}
-{{- if and (include "secrets-bridge-agent.fileMode" .) (hasKey $ctx "fsGroup") (not (hasKey $ctx "fsGroupChangePolicy")) -}}
-{{- $_ := set $ctx "fsGroupChangePolicy" "OnRootMismatch" -}}
-{{- end -}}
-{{- if $ctx -}}
-{{- toYaml $ctx -}}
 {{- end -}}
 {{- end -}}

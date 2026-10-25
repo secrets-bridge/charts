@@ -53,55 +53,37 @@ The control plane comes up behind a single Ingress: the SPA at `/` and the api a
 
 ## Quick start: agent
 
-Agents onboard with a one-time enrollment token. Direct mint (`POST /api/v1/agents`) returns 403 unless the control plane runs with `SB_ALLOW_DIRECT_AGENT_MINT=true`, a break-glass switch that stays off.
-
-Scripts authenticate with the session cookie from `POST /api/v1/auth/login`; the api reads no bearer token for users. Creating an enrollment token needs `agent.mint` and no fresh second factor. Routes that require step-up MFA refuse a session without a recent second factor (`401` with `WWW-Authenticate: step-up`), so do those in the console.
+The agent is stateless. It reads `agent_id`, `agent_secret` and its X25519 wire-encryption `private_key` from a read-only Secret and never writes a file, a PVC or a Kubernetes Secret. The key is generated on your side by `secrets-bridge-agent enroll`; the control plane stores only the public key and a hash of the agent secret.
 
 ```bash
-# 1. On the CP, an admin with agent.mint creates a one-time token for the
-#    provider connection this agent will serve (or creates it in the
-#    console). Login sets a session cookie and returns no token, so the
-#    cookie goes into a private cookie jar. The password is read from the
-#    terminal, not typed on the command line.
-CP=https://secrets-bridge.example.com
-JAR=$(mktemp) && chmod 600 "$JAR"
-read -rp 'Admin email: ' SB_ADMIN_EMAIL
-read -rsp 'Admin password: ' SB_ADMIN_PASSWORD; echo
-jq -n --arg e "$SB_ADMIN_EMAIL" --arg p "$SB_ADMIN_PASSWORD" '{email:$e,password:$p}' \
-  | curl -fsS -c "$JAR" -o /dev/null -X POST "$CP/api/v1/auth/login" \
-      -H 'Content-Type: application/json' --data-binary @-
-unset SB_ADMIN_PASSWORD
-curl -fsS -b "$JAR" -X POST "$CP/api/v1/provider-connections/<connection-id>/agent-enrollment-token" \
-  -H 'Content-Type: application/json' \
-  -d '{"expected_cluster_name":"prod-eu","expected_provider_type":"vault"}'
-# → { "enrollment_token": "...", "expires_at": "...", ... }
-rm -f "$JAR"
+# 1. In the console, an admin with agent.mint creates a one-time enrollment
+#    token for the provider connection this agent will serve.
 
-# 2. Put the token in a Secret in the WORKLOAD cluster. bash or zsh:
-#    paste the token at the silent prompt, then Enter. It never reaches
-#    a command line, your shell history or the process list.
+# 2. On a trusted workstation, enroll and write the result straight into a
+#    Secret in the workload cluster. The token is pasted at a silent prompt
+#    and passed on stdin, so it stays out of argv and shell history.
 kubectl create namespace secrets-bridge
-read -rs SB_ENROLL_TOKEN
-printf '%s' "$SB_ENROLL_TOKEN" | kubectl -n secrets-bridge create secret generic secrets-bridge-agent-enroll \
-  --from-file=enrollment_token=/dev/stdin
+read -rsp 'Enrollment token: ' SB_ENROLL_TOKEN; echo
+printf '%s' "$SB_ENROLL_TOKEN" \
+  | secrets-bridge-agent enroll --cp-endpoint https://secrets-bridge.example.com \
+      --token-file - --name prod-eu-agent --cluster-name prod-eu --provider-type vault \
+      --format env --output - \
+  | kubectl -n secrets-bridge create secret generic secrets-bridge-agent --from-env-file=/dev/stdin
 unset SB_ENROLL_TOKEN
 
-# 3. Install. On first boot the agent trades the token at
-#    POST /api/v1/agents/enroll and keeps its credential on the PVC.
+# 3. Install with the Secret's name. Pin the image by digest.
 helm install agent ./agent \
   --namespace secrets-bridge \
   --set clusterName=prod-eu \
   --set cp.endpoint=https://secrets-bridge.example.com \
   --set image.digest=sha256:<agent-digest> \
-  --set enrollment.enabled=true \
-  --set enrollment.tokenSecretName=secrets-bridge-agent-enroll \
-  --set identity.mode=file \
-  --set identity.persistence.enabled=true \
-  --set agent.providerType=vault \
+  --set identity.existingSecret=secrets-bridge-agent \
   --set providers.vault.enabled=true \
-  --set providers.vault.addr=http://vault.svc.cluster.local:8200 \
+  --set providers.vault.addr=https://vault.example.com \
   --set providers.vault.kubernetesRole=secrets-bridge-agent
 ```
+
+To keep the credential in AWS Secrets Manager or Vault and sync it with External Secrets Operator instead, see [`agent/examples/`](./agent/examples/) and [`agent/README.md`](./agent/README.md).
 
 ## Quick start: gateway
 
@@ -124,13 +106,14 @@ Both charts trip render-time errors on misconfigurations that would otherwise pr
 | Image isn't pinned the same way, and `image.allowMutableTag=true` (dev only) isn't set | `agent` | fails template time |
 | `image.digest` that isn't a bare `sha256:<64 hex>` | both | fails template time |
 | `cp.endpoint=http://` without `cp.insecureTransport=true` | `agent` | fails template time |
-| Missing `clusterName` / `cp.endpoint` / `identity.existingSecret` | `agent` | fails template time |
+| Missing `clusterName` / `cp.endpoint` / `identity.existingSecret`, or no `podSecurityContext.fsGroup` (the non-root agent couldn't read its Secret files) | `agent` | fails template time |
+| Removed identity settings: `identity.mode`, `identity.persistence`, `identity.inline`, `identity.mountPath`, `identity.fileName`, `identity.privateKeyFileName`, `enrollment.*`, `agent.*` | `agent` | `values.schema.json` refuses them, and a template guard names the removed key when schema validation is skipped |
 | Vault Kubernetes auth with `serviceAccount.automountServiceAccountToken=false` | `agent` | fails template time |
 | Unpinned image (as for the agent), `cp.endpoint` or an Argo CD `baseURL` that isn't `https://` without `insecureTransport=true` or carries userinfo, a query or a fragment, missing `identity.existingSecret`, no Argo CD connector, an `eso` or `rollout` connector, a connector without `tokenSecret` name and key, duplicate or non-DNS-label connector names, NetworkPolicy on without egress peers | `gateway` | fails template time |
 
 ## Pod rollout on Secret rotation
 
-Both charts default `secrets.reloader.enabled=true` (CP umbrella) and `reloader.enabled=true` (agent), and stamp `secret.reloader.stakater.com/reload: "<secret-name>"` on every Deployment that envFrom's a Secret. Install [stakater/reloader](https://github.com/stakater/Reloader) once per cluster and ESO-driven Secret refreshes propagate to a pod restart within ~30s.
+Both charts default `secrets.reloader.enabled=true` (CP umbrella) and `reloader.enabled=true` (agent), and stamp `secret.reloader.stakater.com/reload: "<secret-name>"` on every Deployment that reads a Secret (the agent's identity Secret, mounted read-only). Install [stakater/reloader](https://github.com/stakater/Reloader) once per cluster and ESO-driven Secret refreshes propagate to a pod restart within ~30s.
 
 ## Versioning
 
@@ -167,11 +150,13 @@ charts/
 └── agent/                                    Workload-cluster install
     ├── Chart.yaml                            chart name: secrets-bridge-agent
     ├── values.yaml
+    ├── values.schema.json                    refuses unknown keys, including the removed PVC / enrollment ones
     ├── README.md
+    ├── examples/                             kubectl Secret, ESO from AWS SM, ESO from Vault (not packaged)
     └── templates/
         ├── _helpers.tpl
         ├── _validation.tpl                   clusterName + cp.endpoint + identity + pinned image required
-        ├── deployment.yaml                   outbound HTTPS, envFrom identity Secret, optional CA mount
+        ├── deployment.yaml                   outbound HTTPS, read-only identity Secret mount (0400), optional CA mount
         ├── serviceaccount.yaml               IRSA-friendly slot
         ├── networkpolicy.yaml                opt-in egress-only (ingress: [])
         ├── pdb.yaml

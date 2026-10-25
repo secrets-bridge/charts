@@ -1,0 +1,17 @@
+# Agent values for a Secret synced by External Secrets Operator from Vault.
+# Safe to commit.
+clusterName: prod-eu
+cp:
+  endpoint: https://secrets-bridge.example.com
+image:
+  # Pin by digest. Replace with the agent image digest you verified.
+  digest: "sha256:<64 hex characters>"
+identity:
+  existingSecret: secrets-bridge-agent
+providers:
+  vault:
+    enabled: true
+    addr: https://vault.example.com
+    kvMount: kv
+    kvPrefix: apps/
+    kubernetesRole: secrets-bridge-agent

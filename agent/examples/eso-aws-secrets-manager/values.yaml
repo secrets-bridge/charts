@@ -1,0 +1,17 @@
+# Agent values for a Secret synced by External Secrets Operator from AWS
+# Secrets Manager. Safe to commit.
+clusterName: prod-eu
+cp:
+  endpoint: https://secrets-bridge.example.com
+image:
+  # Pin by digest. Replace with the agent image digest you verified.
+  digest: "sha256:<64 hex characters>"
+identity:
+  existingSecret: secrets-bridge-agent
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/secrets-bridge-agent
+providers:
+  awsSecretsManager:
+    enabled: true
+    region: us-east-1

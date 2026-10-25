@@ -12,21 +12,9 @@ metadata:
 spec:
   replicas: {{ .Values.replicaCount }}
   revisionHistoryLimit: 3
-  {{- if .Values.strategy }}
+  {{- with .Values.strategy }}
   strategy:
-    {{- toYaml .Values.strategy | nindent 4 }}
-  {{- else if include "secrets-bridge-agent.fileMode" . }}
-  # The identity PVC is ReadWriteOnce: scale the old pod down before creating the
-  # new one, or a surge pod waits on the volume forever. This is a
-  # RollingUpdate with no surge rather than type Recreate: server-side apply
-  # (Argo CD ServerSideApply=true, Flux, kubectl apply --server-side) leaves
-  # the defaulted rollingUpdate block on an existing Deployment in place, and
-  # the API server rejects rollingUpdate under Recreate.
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 0
-      maxUnavailable: 100%
+    {{- toYaml . | nindent 4 }}
   {{- end }}
   selector:
     matchLabels:
@@ -39,7 +27,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        checksum/config: {{ printf "%s|%s|%s" .Values.cp.endpoint .Values.clusterName (default "" .Values.identity.existingSecret) | sha256sum }}
+        checksum/config: {{ printf "%s|%s|%s|%s" .Values.cp.endpoint .Values.clusterName .Values.identity.existingSecret (toJson .Values.identity.keys) | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -49,7 +37,7 @@ spec:
       # namespace's `default` SA) doesn't hand the agent a token it only
       # needs for Vault Kubernetes auth.
       automountServiceAccountToken: {{ include "secrets-bridge-agent.automountServiceAccountToken" . }}
-      {{- with (include "secrets-bridge-agent.podSecurityContext" . | fromYaml) }}
+      {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -66,6 +54,8 @@ spec:
               containerPort: {{ .Values.probesPort }}
               protocol: TCP
           env:
+            - name: SB_AGENT_CREDENTIALS_DIR
+              value: {{ include "secrets-bridge-agent.credentialsDir" . | quote }}
             - name: SB_LOCAL_ADDR
               value: "{{ default "0.0.0.0" .Values.bindAddress }}:{{ .Values.probesPort }}"
             - name: SB_CLUSTER_NAME
@@ -117,6 +107,15 @@ spec:
             - name: SB_VAULT_KUBERNETES_ROLE
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.providers.vault.tokenSecret }}
+            {{- if .name }}
+            - name: SB_VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .name | quote }}
+                  key: {{ .key | quote }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- if .Values.providers.awsSecretsManager.enabled }}
             {{- with .Values.providers.awsSecretsManager.region }}
@@ -136,64 +135,42 @@ spec:
               value: {{ . | toJson | quote }}
             {{- end }}
             {{- end }}
-            {{- if include "secrets-bridge-agent.fileMode" . }}
-            - name: SB_ENROLLMENT_ENABLED
-              value: {{ .Values.enrollment.enabled | quote }}
-            {{- if .Values.enrollment.enabled }}
-            - name: SB_ENROLLMENT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.enrollment.tokenSecretName | quote }}
-                  key: {{ .Values.enrollment.tokenSecretKey | quote }}
-            {{- end }}
-            - name: SB_IDENTITY_FILE
-              value: {{ include "secrets-bridge-agent.identityFilePath" . | quote }}
-            {{- if .Values.identity.privateKeyFileName }}
-            - name: SB_AGENT_PRIVATE_KEY_FILE
-              value: {{ include "secrets-bridge-agent.privateKeyFilePath" . | quote }}
-            {{- end }}
-            {{- with .Values.agent.name }}
-            - name: SB_AGENT_NAME
-              value: {{ . | quote }}
-            {{- end }}
-            {{- with .Values.agent.providerType }}
-            - name: SB_PROVIDER_TYPE
-              value: {{ . | quote }}
-            {{- end }}
-            {{- with .Values.agent.region }}
-            - name: SB_REGION
-              value: {{ . | quote }}
-            {{- end }}
-            {{- end }}
-          {{- if eq .Values.identity.mode "existingSecret" }}
-          envFrom:
-            - secretRef:
-                name: {{ .Values.identity.existingSecret }}
-          {{- end }}
-          {{- if or .Values.cp.caExistingSecret (include "secrets-bridge-agent.fileMode" .) }}
           volumeMounts:
+            # Read-only directory mount (no subPath), so a rotated Secret
+            # reaches the files; the agent reads them once at start.
+            - name: identity
+              mountPath: {{ include "secrets-bridge-agent.credentialsDir" . | quote }}
+              readOnly: true
             {{- if .Values.cp.caExistingSecret }}
             - name: cp-ca
               mountPath: /etc/secrets-bridge/cp-ca
               readOnly: true
             {{- end }}
-            {{- if include "secrets-bridge-agent.fileMode" . }}
-            # The ONLY writable mount (readOnlyRootFilesystem stays true). The
-            # agent persists its enrolled credential here and reuses it on
-            # restart. Backed by a PVC — never emptyDir (see identity.persistence).
-            - name: identity
-              mountPath: {{ .Values.identity.mountPath | quote }}
-              readOnly: false
-            {{- end }}
-          {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-      {{- if or .Values.cp.caExistingSecret (include "secrets-bridge-agent.fileMode" .) }}
       volumes:
+        # Secret files are owned by root. podSecurityContext.fsGroup gives
+        # them the agent's group, and kubelet adds the group read bit, so
+        # 0400 shows up as 0440 inside the pod. The agent refuses any mode
+        # with group write or any bit for others (mode & 0o037 != 0).
+        - name: identity
+          secret:
+            secretName: {{ .Values.identity.existingSecret | quote }}
+            defaultMode: 256 # 0400
+            items:
+              - key: {{ .Values.identity.keys.agentId | quote }}
+                path: agent_id
+                mode: 256 # 0400
+              - key: {{ .Values.identity.keys.agentSecret | quote }}
+                path: agent_secret
+                mode: 256 # 0400
+              - key: {{ .Values.identity.keys.privateKey | quote }}
+                path: private_key
+                mode: 256 # 0400
         {{- if .Values.cp.caExistingSecret }}
         - name: cp-ca
           secret:
@@ -202,12 +179,6 @@ spec:
               - key: {{ .Values.cp.caExistingSecretKey }}
                 path: {{ .Values.cp.caExistingSecretKey }}
         {{- end }}
-        {{- if include "secrets-bridge-agent.fileMode" . }}
-        - name: identity
-          persistentVolumeClaim:
-            claimName: {{ include "secrets-bridge-agent.identityClaimName" . }}
-        {{- end }}
-      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -12,10 +12,11 @@ description: |
       (bindAddress, default 0.0.0.0:8090).
     - Pinned image required (digest, X.Y.Z or sha-<hex>) unless
       image.allowMutableTag=true for local dev.
-    - Identity material lives in a Kubernetes Secret the operator
-      pre-creates (static mode, default) — never in chart values. An
-      optional enroll-on-first-boot mode persists a credential FILE on a
-      PVC; the agent still holds no cluster-API RBAC.
+    - Identity is a read-only Secret (identity.existingSecret, required)
+      with agent_id, agent_secret and the customer-generated X25519
+      private_key, written from `secrets-bridge-agent enroll` output and
+      never set in chart values. No PVC, no writable identity file, no
+      cluster-API RBAC.
 type: application
 home: https://secrets-bridge.io
 icon: https://raw.githubusercontent.com/secrets-bridge/.github/main/profile/logo.svg
@@ -26,7 +27,7 @@ maintainers:
     url: https://github.com/secrets-bridge
 
 # Pre-v0.1.0 — the chart and the image both roll on `:dev`.
-version: 0.0.2
+version: 0.0.3
 appVersion: "dev"
 
 kubeVersion: ">=1.27.0-0"
@@ -48,48 +49,22 @@ annotations:
     - name: Agent repository
       url: https://github.com/secrets-bridge/agent
   artifacthub.io/changes: |
-    - kind: fixed
+    - kind: removed
       description: |
-        agent: file mode now uses a RollingUpdate with maxSurge 0 and
-        maxUnavailable 100% instead of type Recreate. Under server-side
-        apply (Argo CD ServerSideApply=true, Flux, kubectl apply
-        --server-side) the switch to Recreate failed on existing installs,
-        because the defaulted strategy.rollingUpdate stayed on the live
-        Deployment and the API server rejects it under Recreate.
+        agent: the PVC identity mode and enroll-at-pod-start are removed:
+        identity.mode, identity.persistence, identity.mountPath,
+        identity.fileName, identity.privateKeyFileName, enrollment.* and
+        agent.*. The schema and a template guard refuse them by name.
     - kind: changed
       description: |
-        agent: file mode defaults podSecurityContext.fsGroupChangePolicy to
-        OnRootMismatch (when fsGroup is set), so kubelet stops re-adding
-        group bits to the identity and key files on every mount. An explicit
-        value wins.
-    - kind: fixed
-      description: |
-        agent: file mode (enrollment) now uses a Recreate update strategy.
-        The identity PVC is ReadWriteOnce, so a RollingUpdate surge pod
-        could never attach it and every rollout hung. New `strategy`
-        value overrides (e.g. with a ReadWriteMany existingClaim).
+        agent: identity.existingSecret is the only identity mode and is
+        required. The Secret holds agent_id, agent_secret and private_key
+        (from `secrets-bridge-agent enroll`) and is mounted read-only at
+        /etc/secrets-bridge/agent with mode 0400 (0440 with fsGroup), wired
+        to SB_AGENT_CREDENTIALS_DIR. identity.keys.* maps other key names.
+        The Secret is no longer read with envFrom.
     - kind: added
       description: |
-        agent: file mode keeps the wire-envelope private key on the
-        identity volume (identity.privateKeyFileName, default agent.key,
-        wired to SB_AGENT_PRIVATE_KEY_FILE). The agent generates it on
-        first boot and reuses it, so its registered public key survives
-        restarts. Set to "" for the previous ephemeral keypair.
-    - kind: added
-      description: |
-        agent: optional enroll-on-first-boot (identity.mode=file). When
-        enrollment.enabled=true the agent exchanges a one-time token
-        (from a pre-created Secret) for a persistent credential and
-        writes it to a writable PVC (identity.persistence), reusing it on
-        restart. Static existingSecret mode remains the default and
-        renders byte-for-byte unchanged. The agent holds no cluster-API
-        RBAC in either mode.
-    - kind: fixed
-      description: |
-        agent: bind 0.0.0.0:probesPort by default + drop host:127.0.0.1
-        from probes. Kubelet runs httpGet probes from the node netns;
-        with the previous 127.0.0.1-bound listener + 127.0.0.1 probe
-        target the agent stayed NotReady forever. Loopback-only posture
-        is still available via bindAddress: 127.0.0.1 + an exec probe.
-    - kind: added
-      description: Initial chart for the outbound agent
+        agent: values.schema.json, providers.vault.tokenSecret for Vault
+        token auth, and examples for a kubectl-created Secret and External
+        Secrets Operator from AWS Secrets Manager or Vault.

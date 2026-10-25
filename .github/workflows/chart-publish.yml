@@ -180,7 +180,7 @@ jobs:
           # plane, allowMutableTag for the agent and the gateway), so
           # every image keeps its default reference for the check below.
           # The gateway preset comes from the checkout (ci/ is not packaged).
-          RENDER_FLAGS: ${{ matrix.chart == 'agent' && '--set clusterName=ci --set cp.endpoint=https://x.example.com --set image.allowMutableTag=true' || matrix.chart == 'gateway' && '-f gateway/ci/r1-values.yaml --set image.digest= --set image.allowMutableTag=true' || '--set env=dev --set kms.backend=local --set ingress.host=x.example.com' }}
+          RENDER_FLAGS: ${{ matrix.chart == 'agent' && '--set clusterName=ci --set cp.endpoint=https://x.example.com --set identity.existingSecret=ci --set image.allowMutableTag=true' || matrix.chart == 'gateway' && '-f gateway/ci/r1-values.yaml --set image.digest= --set image.allowMutableTag=true' || '--set env=dev --set kms.backend=local --set ingress.host=x.example.com' }}
           RENDERED: ${{ runner.temp }}/rendered.yaml
         run: |
           # Belt-and-braces: verify the tarball helm just produced
