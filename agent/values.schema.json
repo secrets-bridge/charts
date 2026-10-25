@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "secrets-bridge-agent values",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "identity"
+  ],
+  "properties": {
+    "global": {
+      "type": "object",
+      "properties": {
+        "imageRegistry": {
+          "type": "string"
+        },
+        "imagePullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "commonLabels": {
+          "type": "object"
+        },
+        "commonAnnotations": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "allowMutableTag": {
+          "type": "boolean"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "clusterName": {
+      "type": "string"
+    },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "strategy": {
+      "type": "object"
+    },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "automountServiceAccountToken": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "resources": {
+      "type": "object"
+    },
+    "podSecurityContext": {
+      "type": "object",
+      "required": [
+        "fsGroup"
+      ],
+      "properties": {
+        "fsGroup": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "containerSecurityContext": {
+      "type": "object"
+    },
+    "probesPort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "bindAddress": {
+      "type": "string"
+    },
+    "livenessProbe": {
+      "type": "object"
+    },
+    "readinessProbe": {
+      "type": "object"
+    },
+    "cp": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "caExistingSecret": {
+          "type": "string"
+        },
+        "caExistingSecretKey": {
+          "type": "string"
+        },
+        "tlsServerName": {
+          "type": "string"
+        },
+        "insecureTransport": {
+          "type": "boolean"
+        },
+        "heartbeatInterval": {
+          "type": "string"
+        },
+        "claimInterval": {
+          "type": "string"
+        },
+        "claimConcurrency": {
+          "type": [
+            "string",
+            "integer"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "identity": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {
+          "type": "string",
+          "description": "Required. Secret with agent_id, agent_secret and private_key, written from `secrets-bridge-agent enroll` output."
+        },
+        "keys": {
+          "type": "object",
+          "properties": {
+            "agentId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "agentSecret": {
+              "type": "string",
+              "minLength": 1
+            },
+            "privateKey": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "existingSecret"
+      ]
+    },
+    "providers": {
+      "type": "object",
+      "properties": {
+        "vault": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "addr": {
+              "type": "string"
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "kvMount": {
+              "type": "string"
+            },
+            "kvPrefix": {
+              "type": "string"
+            },
+            "kubernetesRole": {
+              "type": "string"
+            },
+            "tokenSecret": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "key": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "awsSecretsManager": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "region": {
+              "type": "string"
+            },
+            "endpoint": {
+              "type": "string"
+            },
+            "roleArn": {
+              "type": "string"
+            },
+            "tagFilter": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "reloader": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "dnsNamespaceSelector": {
+          "type": "object"
+        },
+        "allowCIDRs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minAvailable": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "podAnnotations": {
+      "type": "object"
+    },
+    "podLabels": {
+      "type": "object"
+    },
+    "nodeSelector": {
+      "type": "object"
+    },
+    "tolerations": {
+      "type": "array"
+    },
+    "affinity": {
+      "type": "object"
+    }
+  }
+}

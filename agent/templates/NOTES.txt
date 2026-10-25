@@ -15,23 +15,13 @@ CP endpoint:  {{ .Values.cp.endpoint }}
 
 {{- end }}
 
-Identity mode:  {{ .Values.identity.mode }}
-{{- if eq .Values.identity.mode "file" }}
+Identity:     Secret "{{ .Values.identity.existingSecret }}", mounted read-only at
+              {{ include "secrets-bridge-agent.credentialsDir" . }} (agent_id, agent_secret, private_key)
 
-  Enroll-on-first-boot is ACTIVE. On its first start the agent exchanges the
-  one-time token (Secret {{ .Values.enrollment.tokenSecretName }}, key
-  {{ .Values.enrollment.tokenSecretKey }}) for a persistent credential and
-  writes it to {{ include "secrets-bridge-agent.identityFilePath" . }} on the
-  {{- if .Values.identity.persistence.existingClaim }} claim {{ .Values.identity.persistence.existingClaim }}{{- else }} PVC {{ include "secrets-bridge-agent.identityClaimName" . }} ({{ .Values.identity.persistence.size }}){{- end }}.
-  A restart REUSES that credential and does NOT re-enroll — the one-time
-  token is spent exactly once. Rotate a spent token by deleting the PVC (or
-  its identity.json) and supplying a fresh token Secret, then rolling the pod.
-{{- else }}
-
-  Static credential mode — the agent reads SB_AGENT_ID + SB_AGENT_SECRET from
-  the pre-created Secret "{{ .Values.identity.existingSecret }}" (envFrom).
-  No writable storage, no cluster-API access; readOnlyRootFilesystem stays true.
-{{- end }}
+  The agent only reads this Secret. It writes no file, PVC or Kubernetes
+  Secret, and refuses to start if a file is missing, malformed, or readable
+  by others. After a key rotation, update the Secret and restart the agent
+  (Reloader does it for you when reloader.enabled=true).
 
 Once the pod is up, verify on the CP side:
 
@@ -45,8 +35,10 @@ If the agent doesn't show up:
   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "secrets-bridge-agent.fullname" . }}
 
 Look for:
-  - "registered agent public key"  (good: wire-envelope path live)
-  - "starting heartbeat loop"      (good: identity Secret resolved)
-  - any "401" / "rejected"         (bad: rotate SB_AGENT_SECRET on
-                                          the CP and re-create the
-                                          identity Secret)
+  - a credentials error at start (a file is missing, malformed or too open:
+                                 fix the Secret, see the troubleshooting docs)
+  - agent_key_mismatch (409)    (the Secret's private_key is not the key
+                                 bound on the CP: rotation not applied, or
+                                 the wrong Secret)
+  - 401 / rejected              (agent revoked or wrong agent_secret:
+                                 enroll again and replace the Secret)

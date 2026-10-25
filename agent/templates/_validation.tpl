@@ -13,37 +13,54 @@ the agent binary tries to boot.
 {{- fail "secrets-bridge-agent: cp.endpoint is required — set it to the HTTPS URL of the control plane (e.g. \"https://secrets-bridge.example.com\")." -}}
 {{- end -}}
 
-{{- /* Identity: static existingSecret (default) XOR enroll-on-first-boot. */ -}}
-{{- $mode := .Values.identity.mode -}}
-{{- $enroll := .Values.enrollment.enabled -}}
-{{- if not (or (eq $mode "existingSecret") (eq $mode "file")) -}}
-{{- fail (printf "secrets-bridge-agent: identity.mode=%q is invalid — must be \"existingSecret\" (static/default) or \"file\" (enrollment)." $mode) -}}
+{{- /*
+  Removed identity settings. The PVC, file mode and enroll-at-pod-start
+  path is gone: the only identity is a read-only identity.existingSecret
+  written by `secrets-bridge-agent enroll`. values.schema.json refuses
+  these keys first; this guard names them when schema validation is
+  skipped, so a stale install fails here instead of starting an agent
+  that can't find its credentials.
+*/ -}}
+{{- $removed := dict
+  "enrollment" "enrollment.* was removed: the agent no longer enrolls at pod start. Run `secrets-bridge-agent enroll` on a workstation and store its output in the Secret named by identity.existingSecret"
+  "agent" "agent.* (name, providerType, region) was removed: pass them to `secrets-bridge-agent enroll` (--name, --provider-type, --region) instead"
+-}}
+{{- range $key, $msg := $removed -}}
+{{- if hasKey $.Values $key -}}
+{{- fail (printf "secrets-bridge-agent: %s. See the chart README, Upgrading from the PVC mode." $msg) -}}
 {{- end -}}
-{{- /* mode and enrollment.enabled are 1:1 */ -}}
-{{- if and $enroll (ne $mode "file") -}}
-{{- fail "secrets-bridge-agent: enrollment.enabled=true requires identity.mode=file (a writable, persistent identity file)." -}}
 {{- end -}}
-{{- if and (not $enroll) (eq $mode "file") -}}
-{{- fail "secrets-bridge-agent: identity.mode=file requires enrollment.enabled=true. For a pre-provisioned credential keep identity.mode=existingSecret (the live / production default)." -}}
+{{- $identity := default (dict) .Values.identity -}}
+{{- range $key := list "mode" "persistence" "inline" "mountPath" "fileName" "privateKeyFileName" -}}
+{{- if hasKey $identity $key -}}
+{{- fail (printf "secrets-bridge-agent: identity.%s was removed. identity.existingSecret is the only identity mode: a read-only Secret with agent_id, agent_secret and private_key, mounted at /etc/secrets-bridge/agent. No PVC, no identity file. See the chart README, Upgrading from the PVC mode." $key) -}}
 {{- end -}}
-{{- if not $enroll -}}
-{{- if not .Values.identity.existingSecret -}}
-{{- fail "secrets-bridge-agent: identity.existingSecret is required in static mode — pre-create the Secret carrying SB_AGENT_ID + SB_AGENT_SECRET, or use enrollment instead (enrollment.enabled=true, identity.mode=file) with a token from POST /api/v1/provider-connections/<id>/agent-enrollment-token." -}}
 {{- end -}}
-{{- else -}}
-{{- if not .Values.enrollment.tokenSecretName -}}
-{{- fail "secrets-bridge-agent: enrollment.enabled=true requires enrollment.tokenSecretName — pre-create a Secret holding the one-time token under key enrollment.tokenSecretKey. Never set the token as a plaintext chart value." -}}
+
+{{- if not $identity.existingSecret -}}
+{{- fail "secrets-bridge-agent: identity.existingSecret is required. Create a Secret with the keys agent_id, agent_secret and private_key from the output of `secrets-bridge-agent enroll` (kubectl, or External Secrets Operator from AWS Secrets Manager or Vault), then set identity.existingSecret to its name. Never put the values in chart values." -}}
 {{- end -}}
-{{- if not (or .Values.identity.persistence.enabled .Values.identity.persistence.existingClaim) -}}
-{{- fail "secrets-bridge-agent: enrollment.enabled=true requires a WRITABLE, restart-persistent identity volume — set identity.persistence.enabled=true (chart provisions a PVC) or identity.persistence.existingClaim. emptyDir is NOT acceptable: a restart would lose the credential and the one-time enrollment token cannot be reused." -}}
+{{- $keys := default (dict) $identity.keys -}}
+{{- range $k := list "agentId" "agentSecret" "privateKey" -}}
+{{- if not (get $keys $k) -}}
+{{- fail (printf "secrets-bridge-agent: identity.keys.%s must not be empty; it names the Secret key the chart mounts." $k) -}}
 {{- end -}}
-{{- with .Values.identity.privateKeyFileName -}}
-{{- if or (contains "/" .) (eq . ".") (eq . "..") -}}
-{{- fail (printf "secrets-bridge-agent: identity.privateKeyFileName=%q must be a bare file name; the key is written under identity.mountPath." .) -}}
 {{- end -}}
-{{- if eq . $.Values.identity.fileName -}}
-{{- fail (printf "secrets-bridge-agent: identity.privateKeyFileName=%q must differ from identity.fileName; the private key and the enrolled credential are separate files." .) -}}
+
+{{- /*
+  Secret volume files are owned by root. Without fsGroup the non-root
+  agent can't read its 0400 credential files at all.
+*/ -}}
+{{- if not (hasKey (default (dict) .Values.podSecurityContext) "fsGroup") -}}
+{{- fail "secrets-bridge-agent: podSecurityContext.fsGroup is required. The identity Secret files are owned by root, and fsGroup is what lets the non-root agent read them (kubelet shows them as 0440 root:<fsGroup>)." -}}
 {{- end -}}
+{{- if eq (toString .Values.podSecurityContext.fsGroup) "<nil>" -}}
+{{- fail "secrets-bridge-agent: podSecurityContext.fsGroup is required. The identity Secret files are owned by root, and fsGroup is what lets the non-root agent read them (kubelet shows them as 0440 root:<fsGroup>)." -}}
+{{- end -}}
+
+{{- with .Values.providers.vault.tokenSecret -}}
+{{- if and .name (not .key) -}}
+{{- fail "secrets-bridge-agent: providers.vault.tokenSecret.key must not be empty when tokenSecret.name is set." -}}
 {{- end -}}
 {{- end -}}
 

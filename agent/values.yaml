@@ -1,31 +1,27 @@
-# Secrets Bridge — agent chart.
+# Secrets Bridge agent chart.
 #
 # Operator orientation:
-#   1. On the CP, an admin (agent.mint) creates a one-time enrollment
-#      token for the provider connection this agent will serve:
-#        POST {CP}/api/v1/provider-connections/<id>/agent-enrollment-token
-#          → { enrollment_token, expires_at, ... }
-#      (Direct mint, POST /api/v1/agents, returns 403 unless the CP runs
-#      with SB_ALLOW_DIRECT_AGENT_MINT=true, a break-glass switch.)
-#   2. Put the token in a Secret in the workload cluster, reading it at a
-#      silent prompt so it stays out of shell history and the process list:
-#        read -rs SB_ENROLL_TOKEN
-#        printf '%s' "$SB_ENROLL_TOKEN" | kubectl create secret generic \
-#          secrets-bridge-agent-enroll --from-file=enrollment_token=/dev/stdin
-#        unset SB_ENROLL_TOKEN
-#   3. Install with enrollment.enabled=true, identity.mode=file and
-#      identity.persistence.enabled=true. On first boot the agent trades
-#      the token at POST /api/v1/agents/enroll for its credential and
-#      keeps it on the PVC. See "Enrollment" below.
-#   4. Set cp.endpoint to the CP's HTTPS URL and clusterName to a stable
-#      identifier for this cluster (used by the discovery flow to
-#      disambiguate refs per cluster).
-#   5. Pin the image: image.digest (preferred) or a release / sha-<hex>
+#   1. On the CP, an admin with agent.mint creates a one-time enrollment
+#      token for the provider connection this agent will serve (console,
+#      or POST {CP}/api/v1/provider-connections/<id>/agent-enrollment-token).
+#   2. On a trusted workstation, inside your own boundary, run
+#      `secrets-bridge-agent enroll` with the token on stdin or in a file.
+#      It generates the X25519 wire key locally and returns agent_id,
+#      agent_secret and private_key once.
+#   3. Store that bundle in your secret store (AWS Secrets Manager, Vault)
+#      and sync it with External Secrets Operator, or pipe it straight into
+#      `kubectl create secret generic`. See examples/.
+#   4. Install this chart with identity.existingSecret naming that Secret.
+#      The agent reads it read-only from /etc/secrets-bridge/agent and never
+#      writes a file, a PVC or a Kubernetes Secret.
+#   5. Set cp.endpoint to the CP's HTTPS URL and clusterName to a stable
+#      identifier for this cluster.
+#   6. Pin the image: image.digest (preferred) or a release / sha-<hex>
 #      image.tag. The chart refuses to render a moving tag unless
 #      image.allowMutableTag=true (local dev only).
-#   6. Configure the provider section the agent will fetch from
-#      (Vault, AWS Secrets Manager, ...). IRSA is the recommended
-#      AWS path; no static AWS creds in chart values.
+#   7. Configure the provider section the agent will fetch from
+#      (Vault, AWS Secrets Manager). IRSA is the recommended AWS path; no
+#      static AWS credentials in chart values.
 
 global:
   imageRegistry: ghcr.io
@@ -63,20 +59,10 @@ clusterName: ""
 
 replicaCount: 1
 
-# Deployment update strategy. Empty (default) = automatic. In FILE mode the
-# chart renders a RollingUpdate with maxSurge 0 and maxUnavailable 100%: the
-# old pod is scaled down before the new one is created. The identity volume
-# is ReadWriteOnce, so the Kubernetes default (a surge pod first, the old pod
-# stopped only once the new one is Ready) hangs every rollout (chart upgrade,
-# Reloader restart). Otherwise the Kubernetes default applies. Set this only
-# to override, e.g. with a ReadWriteMany existingClaim.
-#
-# If you set type: Recreate on an existing Deployment and deploy with
-# server-side apply (Argo CD ServerSideApply=true, Flux, kubectl apply
-# --server-side), the apply fails: the defaulted rollingUpdate block stays on
-# the live object and the API server rejects it under Recreate. Clear it once
-# with: kubectl patch deploy <name> --type=json \
-#   -p '[{"op":"replace","path":"/spec/strategy","value":{"type":"Recreate"}}]'
+# Deployment update strategy. Empty (default) keeps the Kubernetes
+# default. The agent holds no volume that blocks a surge pod, so a rolling
+# update works as is. Note that two pods briefly share one agent identity
+# during a rollout; set type: Recreate to avoid the overlap.
 strategy: {}
 
 serviceAccount:
@@ -93,9 +79,7 @@ serviceAccount:
   # token stays off. IRSA / EKS Pod Identity don't need it (their
   # webhooks project their own token). Applied to the pod spec as well,
   # so it holds with serviceAccount.create=false. Set true/false to
-  # override; false with Vault Kubernetes auth fails the render. If you
-  # pass SB_VAULT_KUBERNETES_ROLE through the identity Secret instead of
-  # providers.vault.kubernetesRole, the chart can't see it: set true.
+  # override; false with Vault Kubernetes auth fails the render.
   automountServiceAccountToken: null
 
 resources:
@@ -106,10 +90,11 @@ resources:
     cpu: 500m
     memory: 256Mi
 
-# In FILE mode the chart adds fsGroupChangePolicy: OnRootMismatch when
-# fsGroup is set and fsGroupChangePolicy is not, so kubelet stops re-adding
-# group bits to the identity and key files on every mount. Set
-# fsGroupChangePolicy here to override (e.g. Always).
+# fsGroup is required for the identity mount. Secret volume files are owned
+# by root; fsGroup gives them group 65532, so the non-root agent can read
+# them. kubelet then adds the group read bit, so defaultMode 0400 shows up
+# as 0440 inside the pod. Without fsGroup the files stay root:root 0400 and
+# the agent can't read them.
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532
@@ -192,109 +177,45 @@ cp:
 
 # ── Identity ─────────────────────────────────────────────────────────
 #
-# The agent identity is an (agent_id, agent_secret) pair the CP hands
-# out exactly once. The supported way to get one is enrollment (below):
-# the agent trades a one-time token for it and stores it in a file. The
-# static mode needs a pre-created Secret carrying:
+# The only identity mode. A Secret you create (kubectl, External Secrets
+# Operator from AWS Secrets Manager or Vault, or your own tooling) holds the
+# bundle `secrets-bridge-agent enroll` printed (the env format and ESO
+# extract may add public_key_fingerprint; it is not mounted):
 #
-#   SB_AGENT_ID:     <id>
-#   SB_AGENT_SECRET: <secret>
+#   agent_id      the agent id the CP issued
+#   agent_secret  the agent credential (the CP keeps only its SHA-256)
+#   private_key   base64 of the 32-byte X25519 wire-encryption key. It is
+#                 generated on your side and never leaves your boundary;
+#                 the CP stores only the public key. It is not a TLS
+#                 client certificate.
 #
-# Optional X25519 keypair material for the wire-envelope path
-# (Piece 8b):
+# The chart mounts it read-only at /etc/secrets-bridge/agent (defaultMode
+# 0400, readOnly) and sets SB_AGENT_CREDENTIALS_DIR to that path. The agent
+# refuses to start when a file is missing or malformed. There is no PVC, no
+# writable identity file, no enrollment at pod start and no Secret-write
+# RBAC. A restart or reschedule reads the same Secret again.
 #
-#   SB_AGENT_PRIVATE_KEY:      <base64>           (env, prefer file)
-#                              -- OR --
-#   SB_AGENT_PRIVATE_KEY_FILE: <mount path>
-#
-# When neither is set, the agent generates an ephemeral keypair per
-# boot and registers it with the CP. Acceptable for dev; persistent
-# keys are recommended for production so a pod restart doesn't
-# rotate the registered pubkey.
+# Never put these values in chart values, Git, shell arguments or CI logs.
 
 identity:
-  # Identity source: "existingSecret" (default; static / production) or
-  # "file" (enrollment). They map 1:1 to the enrollment switch:
-  #   existingSecret  ⟺  enrollment.enabled=false
-  #   file            ⟺  enrollment.enabled=true
-  mode: existingSecret
-
-  # STATIC mode (mode=existingSecret, the default). The operator
-  # pre-creates a Secret carrying SB_AGENT_ID + SB_AGENT_SECRET
-  # (+ optional keypair); wired via envFrom. NO writable storage, NO cluster
-  # API, readOnlyRootFilesystem stays true. Getting that pair requires a
-  # credential the CP already issued (direct mint is off unless the CP
-  # sets SB_ALLOW_DIRECT_AGENT_MINT=true), so new installs use FILE mode.
-  existingSecret: secrets-bridge-agent
-
-  # FILE mode (mode=file — enrollment). The agent reads/writes its credential
-  # at <mountPath>/<fileName> (SB_IDENTITY_FILE) on a WRITABLE, restart-
-  # persistent volume, and reuses it on restart (the one-time enrollment
-  # token is spent exactly once).
-  mountPath: /var/lib/secrets-bridge-agent
-  fileName: identity.json
-
-  # FILE mode only: the agent's X25519 wire-envelope private key, kept on the
-  # same volume (SB_AGENT_PRIVATE_KEY_FILE=<mountPath>/<privateKeyFileName>).
-  # The agent generates it on first boot (mode 0600, never overwritten) and
-  # reuses it on restart, so the public key it registers with the CP stays
-  # stable and sealed wraps not yet consumed survive a pod restart. Set to ""
-  # to fall back to an ephemeral per-boot keypair. Must differ from fileName.
-  # (Static mode: put SB_AGENT_PRIVATE_KEY[_FILE] in the identity Secret.)
-  privateKeyFileName: agent.key
-
-  # Persistence for FILE mode. MUST be a PVC (chart-created) or a BYO claim.
-  # A Kubernetes Secret can NOT back this (the agent persists a FILE and must
-  # never hold cluster-API write RBAC — it stays outbound-only, BRD §15/§24),
-  # and an emptyDir is REJECTED (a restart would lose the credential and the
-  # one-time enrollment token cannot be reused).
-  persistence:
-    enabled: false
-    existingClaim: ""              # BYO a claim; else the chart creates a PVC
-    storageClass: ""               # "" = cluster default StorageClass
-    accessModes:
-      - ReadWriteOnce
-    size: 1Gi
-
-# ── Enrollment (agent-1 self-enrollment; charts-1) ───────────────────
-#
-# Enroll-on-first-boot. An admin creates the ONE-TIME token on the CP with
-# POST /api/v1/provider-connections/<id>/agent-enrollment-token. When enabled
-# AND no credential is stored, the agent exchanges that token
-# (POST /api/v1/agents/enroll) for a persistent
-# credential, writes it to identity.persistence, and heartbeats. On restart
-# it reuses the persisted credential and does NOT re-enroll (the one-time
-# token is spent exactly once). Requires identity.persistence (a writable,
-# restart-persistent volume) — a read-only Secret mount cannot enroll.
-#
-# The one-time token is read from an EXISTING Secret you create — never set
-# it as a plaintext chart value (it must not render into a manifest), and
-# keep it off the command line:
-#   read -rs SB_ENROLL_TOKEN
-#   printf '%s' "$SB_ENROLL_TOKEN" | kubectl create secret generic <name> \
-#     --from-file=enrollment_token=/dev/stdin
-#   unset SB_ENROLL_TOKEN
-enrollment:
-  enabled: false
-  tokenSecretName: ""
-  tokenSecretKey: enrollment_token
-
-# Fields reported to the CP at enrollment. clusterName is the top-level
-# .Values.clusterName (identity for discovery, already required). name
-# defaults to the pod hostname when empty. providerType MUST match the
-# enrollment token's binding on the CP.
-agent:
-  name: ""
-  providerType: aws-sm
-  region: ""
+  # Required. Name of the Secret in the release namespace. The documented
+  # name is secrets-bridge-agent-identity, which is also the default of
+  # `secrets-bridge-agent enroll --format k8s-secret --secret-name`.
+  existingSecret: ""
+  # Key names inside the Secret, when they differ from the defaults. The
+  # chart maps each one to the fixed file name the agent reads. Other keys
+  # in the Secret (for example public_key_fingerprint) are not mounted.
+  keys:
+    agentId: agent_id
+    agentSecret: agent_secret
+    privateKey: private_key
 
 # ── Providers ────────────────────────────────────────────────────────
 #
 # Provider connection details consumed by the agent's resolver
-# factories (Piece 4c+4d). Credentials are NEVER set as chart values;
-# they live in the identity Secret OR cluster-provided IRSA / kube
-# auth so this chart can be safely committed alongside application
-# code.
+# factories. Credentials are never chart values: use IRSA / EKS Pod
+# Identity, Vault Kubernetes auth, or (Vault token auth) a Secret you name
+# in providers.vault.tokenSecret. The values below are safe to commit.
 
 providers:
   vault:
@@ -315,6 +236,11 @@ providers:
     kvPrefix: ""
     # SB_VAULT_KUBERNETES_ROLE for k8s-auth (preferred over token)
     kubernetesRole: ""
+    # Vault token auth (SB_VAULT_TOKEN), read from an existing Secret.
+    # Leave name empty with Kubernetes auth.
+    tokenSecret:
+      name: ""
+      key: token
 
   awsSecretsManager:
     enabled: false
@@ -346,7 +272,9 @@ reloader:
   # Stamps the agent Deployment with
   # `secret.reloader.stakater.com/reload: <identity.existingSecret>`
   # so a stakater/reloader install in the cluster rolls the pod
-  # within ~30s of any Secret change (rotated keypair, rotated CA).
+  # within ~30s of an identity Secret change (rotated key). The agent
+  # reads its credentials once at start, so without Reloader you restart
+  # it yourself after a rotation: kubectl rollout restart.
   enabled: true
 
 # ── NetworkPolicy ────────────────────────────────────────────────────
