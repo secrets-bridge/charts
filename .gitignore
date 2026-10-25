@@ -1,0 +1,6 @@
+# Local `helm template` output. Charts live in their own folders, so no
+# real chart file sits at the repo root.
+/*.yaml
+/*.yml
+# The CI template job renders into out/.
+/out/
