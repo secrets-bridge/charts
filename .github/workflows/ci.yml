@@ -13,7 +13,9 @@ name: ci
 #   4. agent-identity-mount — on a kind cluster, the identity Secret shows
 #                      up read-only at /etc/secrets-bridge/agent with the
 #                      file modes the agent accepts (0440 root:<fsGroup>)
-#   5. release-name  — sanity check that the chart names + per-component
+#   5. root-hygiene  fails if a YAML file sits at the repo root, where
+#                      only render output ends up (charts live in folders)
+#   6. release-name  — sanity check that the chart names + per-component
 #                      fullnames truncate cleanly to ≤63 chars under a
 #                      long release name (K8s label length limit)
 #
@@ -24,6 +26,9 @@ on:
   push:
     branches: [main]
     paths:
+      - '*.yaml'
+      - '*.yml'
+      - '.gitignore'
       - 'secrets-bridge/**'
       - 'agent/**'
       - 'gateway/**'
@@ -32,6 +37,9 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - '*.yaml'
+      - '*.yml'
+      - '.gitignore'
       - 'secrets-bridge/**'
       - 'agent/**'
       - 'gateway/**'
@@ -973,6 +981,26 @@ jobs:
             [ $(( 8#$m & 8#037 )) -eq 0 ] || { echo "::error::mode $m too open"; exit 1; }
           done
 
+  root-hygiene:
+    name: no YAML at the repo root
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Every chart lives in its own folder, so a tracked *.yaml or *.yml
+      # at the root is a stray `helm template` render. Render into
+      # $RUNNER_TEMP or another folder outside the checkout instead.
+      - name: refuse root-level YAML
+        run: |
+          stray=$(git ls-files -- '*.yaml' '*.yml' | grep -v / || true)
+          if [ -n "$stray" ]; then
+            echo "YAML files at the repo root (render output?):"
+            echo "$stray"
+            exit 1
+          fi
+
   release-name:
     name: release-name truncation
     runs-on: ubuntu-latest
@@ -997,15 +1025,15 @@ jobs:
           helm template "$LONG_NAME" secrets-bridge/ \
             --set env=dev --set kms.backend=local \
             --set ingress.host=x.example.com \
-            > out.yaml
+            > "$RUNNER_TEMP/out.yaml"
           # Find any `  name: xxx` line where xxx is >63 chars
-          awk '/^  name: / { n=$2; if (length(n) > 63) { print "TOO LONG ("length(n)"): "n; bad=1 } } END { exit bad?1:0 }' out.yaml
+          awk '/^  name: / { n=$2; if (length(n) > 63) { print "TOO LONG ("length(n)"): "n; bad=1 } } END { exit bad?1:0 }' "$RUNNER_TEMP/out.yaml"
 
       - name: render the gateway with a long release name
         run: |
           # 53 is the longest release name helm accepts.
           LONG_NAME=$(printf 'a%.0s' {1..53})
-          helm template "$LONG_NAME" gateway/ -f gateway/ci/r1-values.yaml > gw.yaml
-          awk '/^  name: / { n=$2; if (length(n) > 63) { print "TOO LONG ("length(n)"): "n; bad=1 } } END { exit bad?1:0 }' gw.yaml
+          helm template "$LONG_NAME" gateway/ -f gateway/ci/r1-values.yaml > "$RUNNER_TEMP/gw.yaml"
+          awk '/^  name: / { n=$2; if (length(n) > 63) { print "TOO LONG ("length(n)"): "n; bad=1 } } END { exit bad?1:0 }' "$RUNNER_TEMP/gw.yaml"
           # The ConfigMap suffix survives the cut.
-          grep -qE '^  name: a{52}-connectors$' gw.yaml
+          grep -qE '^  name: a{52}-connectors$' "$RUNNER_TEMP/gw.yaml"
